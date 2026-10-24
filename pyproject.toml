@@ -1,0 +1,31 @@
+# Project metadata and dependencies for the lightweight coding agent.
+[build-system]
+requires = ["setuptools>=69"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "myagent"
+version = "0.1.0"
+description = "A lightweight, cache-stable command-line coding agent"
+readme = "README.md"
+requires-python = ">=3.11"
+dependencies = [
+  "openai>=1.30",
+  "prompt-toolkit>=3.0",
+  "pydantic>=2.0",
+  "pyyaml>=6.0",
+  "rich>=13.0",
+]
+
+[project.optional-dependencies]
+test = ["pytest>=8.0"]
+
+[project.scripts]
+myagent = "myagent.cli:main"
+
+[tool.setuptools.packages.find]
+include = ["myagent*"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+
