@@ -1,4 +1,4 @@
-"""Distill successful tool trajectories into versioned, scoped skills."""
+"""Distill verified tool trajectories into versioned procedural Skills."""
 
 from __future__ import annotations
 
@@ -16,11 +16,12 @@ from .schema import Skill, SkillFrontmatter
 
 DISTILL_PROMPT = """你是一个技能提炼器。下面是完成一个 coding 任务的执行轨迹。
 请生成一个 SKILL.md，包含：
-1. frontmatter（name, description, triggers, scope_manifest）
+1. frontmatter（name, description, scene, triggers, permission_requirements）
 2. 分步骤的操作指南
 
 约束：
-- scope_manifest 只能包含轨迹中实际调用过的工具
+- permission_requirements 只能描述轨迹中实际调用过的工具；它不是授权
+- scene 使用稳定的任务场景标签，例如 code-repair、code-development、documentation
 - 步骤要具体到工具名和参数模式
 - 不要编造轨迹中没出现的工具
 
@@ -133,7 +134,7 @@ def distill(history: list[Message], client) -> Skill:
 
     accepted = []
     removed: set[str] = set()
-    for item in frontmatter.scope_manifest:
+    for item in frontmatter.permission_requirements:
         if item.tool in used_tools:
             accepted.append(item)
         else:
@@ -147,7 +148,7 @@ def distill(history: list[Message], client) -> Skill:
 
     safe_name = _safe_name(frontmatter.name)
     frontmatter = frontmatter.model_copy(
-        update={"name": safe_name, "scope_manifest": accepted}
+        update={"name": safe_name, "permission_requirements": accepted}
     )
     skill_dir = (get_home() / "skills_store" / safe_name).resolve()
     skill_dir.mkdir(parents=True, exist_ok=True)

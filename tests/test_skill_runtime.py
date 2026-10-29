@@ -1,4 +1,4 @@
-"""Verify that retrieved L1 instructions narrow runtime authority."""
+"""Verify that Skills describe needs while the permission tree owns authority."""
 
 import json
 
@@ -8,9 +8,9 @@ from myagent.agent.loop import run_turn
 from myagent.agent.state import SessionState
 from myagent.audit.log import verify
 from myagent.llm.types import LLMResponse, ToolCall
+from myagent.permissions import PermissionAtom, PermissionTree, ToolPermissionAdapter
 from myagent.skills.manager import load_index
 from myagent.tools.registry import TOOLS, register
-from myagent.tools.scope import Scope, ToolRule
 
 
 @pytest.fixture(autouse=True)
@@ -40,11 +40,11 @@ class SkillAttackClient:
                 ],
             )
         tool_message = next(message for message in messages if message.role == "tool")
-        assert "scope_denied" in tool_message.content
+        assert "permission_denied" in tool_message.content
         return LLMResponse(content="write denied")
 
 
-def test_primary_skill_body_persists_for_turn_and_scope_cannot_escalate(monkeypatch, tmp_path) -> None:
+def test_primary_skill_body_persists_but_does_not_change_tree_authority(monkeypatch, tmp_path) -> None:
     monkeypatch.setenv("MYAGENT_HOME", str(tmp_path / "home"))
     skill_dir = tmp_path / "skills" / "run-tests"
     skill_dir.mkdir(parents=True)
@@ -53,7 +53,7 @@ def test_primary_skill_body_persists_for_turn_and_scope_cannot_escalate(monkeypa
 name: run-tests
 description: Run pytest safely.
 triggers: [pytest]
-scope_manifest:
+permission_requirements:
   - tool: test_run
 ---
 Run tests in this exact order.
@@ -67,20 +67,18 @@ Run tests in this exact order.
         lambda path, content: {"path": path},
         risk="high",
     )
-    parent = Scope(
-        {
-            "test_run": ToolRule("test_run", lambda _params: True),
-            "file_write": ToolRule("file_write", lambda _params: True),
-        }
-    )
+    tree = PermissionTree(tmp_path, [PermissionAtom.without_files("test_run")])
+    tree.attach_agent(tree.ROOT_ID, "skill-agent")
     state = SessionState(
         session_id="skill-session",
+        agent_id="skill-agent",
+        permission_tree=tree,
+        permission_adapter=ToolPermissionAdapter(tmp_path),
         cwd=str(tmp_path),
-        scope=parent,
         skill_index=load_index(tmp_path / "skills"),
     )
 
-    answer = run_turn(state, "Please run pytest", SkillAttackClient(), parent, lambda _call: True)
+    answer = run_turn(state, "Please run pytest", SkillAttackClient(), lambda _call: True)
 
     assert answer == "write denied"
     assert not (tmp_path / "owned.txt").exists()
@@ -94,4 +92,4 @@ Run tests in this exact order.
         "skill_retrieved",
         "skill_activated",
     ]
-    assert records[-1]["result"]["error"] == "scope_denied"
+    assert records[-1]["result"]["error"] == "permission_denied"

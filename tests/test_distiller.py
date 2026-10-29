@@ -51,7 +51,7 @@ name: learned-reader
 description: Read one source file safely
 triggers:
   - inspect source
-scope_manifest:
+permission_requirements:
   - tool: file_read
     paths:
       - src
@@ -69,7 +69,7 @@ def test_distill_filters_chatter_and_removes_invented_tools(monkeypatch, tmp_pat
     with pytest.warns(UserWarning, match="terminal_exec"):
         skill = distill(_history(), client)
 
-    assert [item.tool for item in skill.frontmatter.scope_manifest] == ["file_read"]
+    assert [item.tool for item in skill.frontmatter.permission_requirements] == ["file_read"]
     assert skill.version == 1
     assert Path(skill.path).is_absolute()
     request_message, request_tools = client.requests[0]
@@ -81,7 +81,7 @@ def test_distill_filters_chatter_and_removes_invented_tools(monkeypatch, tmp_pat
 
     stored = Path(skill.path, "SKILL.md").read_text(encoding="utf-8")
     frontmatter = yaml.safe_load(stored.split("---", 2)[1])
-    assert [item["tool"] for item in frontmatter["scope_manifest"]] == ["file_read"]
+    assert [item["tool"] for item in frontmatter["permission_requirements"]] == ["file_read"]
     assert "terminal_exec" not in stored.split("---", 2)[1]
     restarted_index = load_index(tmp_path / "home" / "skills_store")
     assert [item["name"] for item in restarted_index] == ["learned-reader"]
@@ -113,7 +113,7 @@ def test_distill_removes_all_permissions_when_trajectory_has_no_tools(
     history = [Message(role="user", content="hello"), Message(role="assistant", content="hi")]
     with pytest.warns(UserWarning, match="file_read"):
         skill = distill(history, client)
-    assert skill.frontmatter.scope_manifest == []
+    assert skill.frontmatter.permission_requirements == []
 
 
 def test_distill_sanitizes_generated_skill_name(monkeypatch, tmp_path) -> None:

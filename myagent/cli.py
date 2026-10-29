@@ -20,9 +20,10 @@ from .llm.client import OpenAIClient
 from .llm.types import ToolCall
 from .memory.store import init_db
 from .home import get_home
+from .permissions import PermissionTree, ToolPermissionAdapter
 from .skills.manager import load_index
 from .skills.distiller import distill
-from .tools.builtin import default_scope, register_all
+from .tools.builtin import default_permission_atoms, register_all
 from .tools.registry import schemas
 
 
@@ -93,27 +94,55 @@ def main() -> None:
 
     cwd = Path.cwd().resolve()
     skill_strategy = str(config["skills"]["strategy"])
-    if skill_strategy not in {"full_sidecar", "top_k"}:
-        raise ValueError("skills.strategy 必须是 full_sidecar 或 top_k")
+    if skill_strategy not in {
+        "full_sidecar",
+        "full_system",
+        "top_k",
+        "warm_stable",
+        "scene_epoch",
+    }:
+        raise ValueError(
+            "skills.strategy 必须是 full_sidecar、full_system、top_k、warm_stable 或 scene_epoch"
+        )
     skill_top_k = int(config["skills"]["top_k"])
     if skill_top_k <= 0:
         raise ValueError("skills.top_k 必须大于 0")
+    skill_candidate_k = int(config["skills"]["candidate_k"])
+    if skill_candidate_k <= 0:
+        raise ValueError("skills.candidate_k 必须大于 0")
+    skill_max_frozen = int(config["skills"]["max_frozen"])
+    if skill_max_frozen <= 0:
+        raise ValueError("skills.max_frozen 必须大于 0")
+    skill_warm_turns = int(config["skills"]["warm_turns"])
+    if skill_warm_turns <= 0:
+        raise ValueError("skills.warm_turns 必须大于 0")
+    skill_idle_seconds = float(config["skills"]["idle_seconds"])
+    if skill_idle_seconds <= 0:
+        raise ValueError("skills.idle_seconds 必须大于 0")
     skill_activation_min_score = float(config["skills"]["activation_min_score"])
     if skill_activation_min_score < 0:
         raise ValueError("skills.activation_min_score 不能小于 0")
     register_all(config, cwd)
     initialize_stable_prefix(schemas())
-    scope = default_scope(config, cwd)
+    agent_id = f"root-{uuid.uuid4().hex}"
+    permission_tree = PermissionTree(cwd, default_permission_atoms())
+    permission_tree.attach_agent(permission_tree.ROOT_ID, agent_id)
     state = SessionState(
         session_id=uuid.uuid4().hex,
-        scope=scope,
+        agent_id=agent_id,
+        permission_tree=permission_tree,
+        permission_adapter=ToolPermissionAdapter(cwd),
         cwd=str(cwd),
         repo_snapshot=_repo_snapshot(cwd),
         agents_content=_read_agents_once(cwd),
         skill_index=_load_skill_index(),
         skill_strategy=skill_strategy,
         skill_top_k=skill_top_k,
+        skill_candidate_k=skill_candidate_k,
         skill_activation_min_score=skill_activation_min_score,
+        skill_max_frozen=skill_max_frozen,
+        skill_warm_turns=skill_warm_turns,
+        skill_idle_seconds=skill_idle_seconds,
         max_steps=int(config["agent"]["max_steps"]),
         memory_conn=init_db(get_home() / "memory.db"),
     )
@@ -131,11 +160,60 @@ def main() -> None:
 
     def handle(text: str) -> None:
         if text.strip() == "/learn":
-            skill = distill(state.history, client)
+            if not state.last_evolution_eligible:
+                reasons = ", ".join(state.last_evolution_reasons) or "尚无已验证变更"
+                console.print(f"[yellow]本轮轨迹未通过进化门禁：{reasons}[/yellow]")
+                return
+            skill = distill(state.last_evolution_history, client)
+            state.last_evolution_eligible = False
+            state.last_evolution_reasons = ("trajectory_already_distilled",)
+            state.last_evolution_history = []
             state.skill_index = _load_skill_index()
             console.print(f"[green]已蒸馏技能：{skill.frontmatter.name}[/green]")
             return
-        answer = run_turn(state, text, client, scope, approve)
+        if text.strip() == "/skill-status":
+            load_state = state.skill_load_state
+            console.print(
+                {
+                    "strategy": state.skill_strategy,
+                    "phase": load_state.phase,
+                    "epoch_id": load_state.epoch_id,
+                    "scene": load_state.scene,
+                    "frozen_skills": list(load_state.frozen_names),
+                    "confirmed_fallbacks": list(
+                        load_state.confirmed_fallback_names
+                    ),
+                    "router_prompt_tokens": state.skill_router_prompt_tokens,
+                    "system_prompt_changes": state.skill_cache_epoch_changes,
+                }
+            )
+            return
+        if text.strip() == "/skill-reset":
+            was_frozen = state.skill_load_state.phase == "frozen"
+            event = state.skill_load_state.reset(reason="user_reset")
+            if was_frozen:
+                state.skill_cache_epoch_changes += 1
+            console.print(f"[green]Skill Epoch 已重置：{event}[/green]")
+            return
+        if text.strip().startswith("/scene "):
+            scene = text.strip().split(maxsplit=1)[1].strip()
+            allowed_scenes = {
+                str(item.get("scene", "general")) for item in state.skill_index
+            }
+            if scene not in allowed_scenes:
+                console.print(
+                    "[yellow]未知场景。可选："
+                    + ", ".join(sorted(allowed_scenes))
+                    + "[/yellow]"
+                )
+                return
+            was_frozen = state.skill_load_state.phase == "frozen"
+            state.skill_load_state.reset(reason="user_scene", scene=scene)
+            if was_frozen:
+                state.skill_cache_epoch_changes += 1
+            console.print(f"[green]已切换场景并开始新Epoch：{scene}[/green]")
+            return
+        answer = run_turn(state, text, client, approve)
         console.print(answer)
 
     if len(sys.argv) > 1:

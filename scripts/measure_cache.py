@@ -13,7 +13,8 @@ from myagent.cli import _load_skill_index
 from myagent.config import load_config
 from myagent.context.stable import initialize_stable_prefix
 from myagent.llm.client import OpenAIClient
-from myagent.tools.builtin import default_scope, register_all
+from myagent.permissions import PermissionTree, ToolPermissionAdapter
+from myagent.tools.builtin import default_permission_atoms, register_all
 from myagent.tools.registry import schemas
 
 
@@ -66,16 +67,22 @@ def main() -> None:
     cwd = Path.cwd().resolve()
     register_all(config, cwd)
     initialize_stable_prefix(schemas())
-    scope = default_scope(config, cwd)
+    agent_id = f"measure-{uuid.uuid4().hex}"
+    permission_tree = PermissionTree(cwd, default_permission_atoms())
+    permission_tree.attach_agent(permission_tree.ROOT_ID, agent_id)
     state = SessionState(
         session_id=uuid.uuid4().hex,
-        scope=scope,
+        agent_id=agent_id,
+        permission_tree=permission_tree,
+        permission_adapter=ToolPermissionAdapter(cwd),
         cwd=str(cwd),
         repo_snapshot=_snapshot(cwd),
         skill_index=_load_skill_index(),
         skill_strategy=str(config["skills"]["strategy"]),
         skill_top_k=int(config["skills"]["top_k"]),
+        skill_candidate_k=int(config["skills"]["candidate_k"]),
         skill_activation_min_score=float(config["skills"]["activation_min_score"]),
+        skill_max_frozen=int(config["skills"]["max_frozen"]),
         max_steps=int(config["agent"]["max_steps"]),
     )
     base_url = config["llm"].get("base_url")
@@ -92,7 +99,7 @@ def main() -> None:
     for turn in range(1, 6):
         client.reset()
         prompt = f"这是缓存测量的第 {turn} 轮。不要调用工具，只回复：收到。"
-        run_turn(state, prompt, client, scope, lambda _call: False)
+        run_turn(state, prompt, client, lambda _call: False)
         ratio = client.cached_tokens / client.prompt_tokens if client.prompt_tokens else 0.0
         print(
             f"turn={turn} prompt_tokens={client.prompt_tokens} "

@@ -1,81 +1,70 @@
-<!-- Reproducible status report for the skill-loading redesign. -->
-# Skill loading: first evaluation checkpoint
+# Skill loading evaluation history
 
-Date: 2026-10-23
+## 1. Lexical retrieval checkpoint
 
-## Decision
+The first deterministic checkpoint used keyword retrieval only. On 14 positive
+challenge tasks it reached 42.9% candidate recall@5, so keyword Top-K was rejected.
+This result explains why the runtime does not rely on literal user wording.
 
-**No-go for making Top-K or Warm-Stable the default.** The structural cost
-experiment passes, but the independent retrieval challenge fails the 95%
-availability gate. `full_sidecar` therefore remains the default; `top_k` is an
-explicit canary option only.
-
-## Reproduce
+Reproduce:
 
 ```powershell
-python -m pytest -q
 python scripts/evaluate_skill_loading.py
-python scripts/evaluate_skill_loading.py --json
 ```
 
-The benchmark creates exactly 100 L0 records and evaluates five strategies over
-eight session shapes. Its token number is `ceil(UTF-8 bytes / 4)`, a deterministic
-relative proxy rather than a provider billing-token claim.
+## 2. Semantic routing component
 
-## Results
+The next experiment compared reranking all 100 Skill rows with:
 
-Across all eight structural scenarios:
+```text
+main-model query expansion → local candidate recall@20 → main-model reranking
+```
 
-| Strategy | Skill token proxy | Irrelevant token proxy | L0 availability |
-|---|---:|---:|---:|
-| Full-Sidecar (current baseline) | 344,508 | 341,306 | 100% |
-| Full-System | 344,508 | 341,306 | 100% |
-| Top-K | 15,868 | 12,664 | 100% |
-| Warm-Stable | 21,419 | 18,210 | 100% |
-| Oracle | 3,202 | 0 | 100% |
+On the 14 positive tasks, the component reduced selection-stage provider input
+from 70,057 to 10,401 tokens (85.15%) and kept the required Skill visible in
+13/14 tasks. The miss was scanned-PDF extraction: the candidate set contained the
+required Skill, but reranking selected OCR correction only.
 
-On exact-trigger structural traffic, Top-K reduces total Skill context by 95.4%
-and irrelevant Skill context by 96.3%. It is also smaller than Warm-Stable, so a
-freeze mechanism is not justified until retrieval quality itself is solved.
+Reproduce with the configured provider credential:
 
-The separate challenge set is deliberately not generated from the Skill
-metadata and includes paraphrases, compound intentions, hard negatives, and
-no-Skill chat:
+```powershell
+python scripts/evaluate_skill_rag.py --json
+```
 
-| Metric | Result | Gate |
-|---|---:|---:|
-| Relevant Skill visible in Top-5 | 42.9% | >=95% |
-| Correct primary Skill | 28.6% | diagnostic |
-| No-Skill chat correctly returns empty | 100% | 100% |
+This is a routing-component result. It does not measure System-prompt freezing,
+provider cache reuse, temporary Sidecar injection, or drift recovery.
 
-The failure is mostly semantic paraphrasing. Increasing `k` cannot recover a
-Skill that lexical retrieval never finds, and therefore cannot honestly close
-the gap.
+## 3. Superseded automatic-drift experiment
 
-## Runtime changes already safe to keep
+The earlier `warm_stable` canary used:
 
-- Deterministic, explainable L0 retrieval with scored reasons.
-- At most one high-confidence L1 Skill is loaded per user turn.
-- The L1 manifest is intersected with the parent Scope; it cannot add tools.
-- API tool schemas are filtered to the effective Scope, and the guard repeats
-  the same check before execution.
-- L0/L1 sidecars remain ephemeral and are not written into chat history.
-- Retrieval, activation, denial, and tool denial are auditable. Raw user text is
-  represented by a SHA-256 digest and length in Skill-retrieval audit entries.
-- Prompt order is chronological: stable system, history, current sidecar.
+```text
+warmup routing → System L0 freeze → shadow retrieval → sustained-drift thaw
+```
 
-## Next gate
+That evaluation exposed unstable warmup recall and cache invalidation. Its results remain
+as historical evidence, but the content-driven thaw strategy has been removed.
 
-Before changing the default, compare these alternatives on at least 30 labeled
-tasks with three real-model repetitions each:
+## 4. Scene-Epoch strategy
 
-1. richer author-provided triggers plus lexical Top-K;
-2. confidence-gated fallback to Full-Sidecar;
-3. a semantic/router step that selects a Skill before operational tools are
-   exposed.
+The current canary classifies a stable task scene, accumulates recall-first candidates
+during warmup, freezes the workset once, and handles out-of-workset Skills as temporary
+Sidecar overlays. Frozen epochs reset only after an idle timeout or explicit user command.
 
-Measure relevant L0 visibility, correct L1 activation, end-task success, input
-tokens, provider-reported cached tokens, switch recovery, and Scope denials.
-Only promote a strategy if L0 availability reaches 95%, task success is within
-10 percentage points of Full-Sidecar, irrelevant Skill tokens fall at least 70%,
-and no Scope escalation occurs.
+The deterministic structural check now reports 19/19 required-Skill visibility,
+one System change per conversation, and a 75.87% reduction in the uncached Skill-token
+proxy across the same 100-Skill, 19-turn workload. It validates placement and state
+transitions under a successful planner; it deliberately excludes retrieval quality,
+router input, and provider billing/cache behavior.
+
+The first provider-reported implementation reached 19/19 required-Skill visibility but
+increased uncached input by 91.21% because two model-router calls occurred on every turn.
+Local escape gating and epoch-scoped fallback confirmation reduced router calls from 38
+to 10. The final paired run kept 19/19 visibility, reduced total prompt input by 48.83%,
+and reduced uncached input by 9.47%. See
+[`scene-epoch-ab-report.md`](scene-epoch-ab-report.md) for the current result and
+[`skill-epoch-system-experiment.md`](skill-epoch-system-experiment.md) for the superseded
+strategy's historical report.
+
+Authorization is outside this comparison. Skill requirements are context metadata;
+the atomic permission tree remains the only runtime authority.

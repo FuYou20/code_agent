@@ -1,4 +1,4 @@
-"""Track topic-local skill candidates and cache-stable frozen L0 metadata."""
+"""Track one explicit scene epoch and its immutable frozen Skill workset."""
 
 from __future__ import annotations
 
@@ -16,6 +16,7 @@ def skill_index_generation(index: list[dict]) -> str:
         {
             "name": item.get("name", ""),
             "description": item.get("description", ""),
+            "scene": item.get("scene", "general"),
             "triggers": item.get("triggers", []),
             "path": item.get("path", ""),
         }
@@ -25,106 +26,113 @@ def skill_index_generation(index: list[dict]) -> str:
     return hashlib.sha256(raw.encode("utf-8")).hexdigest()[:16]
 
 
-def _jaccard(left: set[str], right: set[str]) -> float:
-    if not left and not right:
-        return 1.0
-    union = left | right
-    return len(left & right) / len(union) if union else 0.0
-
-
 @dataclass
 class SkillLoadState:
-    """State machine for one conversational skill-topic epoch."""
+    """Accumulate a scene workset, freeze it once, and reset only explicitly."""
 
     phase: str = "warming"
     epoch_id: int = 1
     user_turn: int = 0
     epoch_turn: int = 0
     candidate_scores: dict[str, float] = field(default_factory=dict)
-    recent_topk: list[tuple[str, ...]] = field(default_factory=list)
     frozen_names: tuple[str, ...] = ()
-    stable_streak: int = 0
-    drift_streak: int = 0
+    confirmed_fallback_names: tuple[str, ...] = ()
+    scene: str = ""
+    forced_scene: str = ""
     last_turn_ts: float | None = None
     skill_generation: str = ""
     freeze_turn: int | None = None
+
+    def warming_names(self, max_items: int = 8) -> tuple[str, ...]:
+        """Return the cumulative recall-first workset visible during warmup."""
+        ranked = sorted(
+            self.candidate_scores,
+            key=lambda name: (-self.candidate_scores[name], name),
+        )[:max_items]
+        return tuple(ranked)
+
+    def reset(self, *, reason: str, scene: str = "") -> str:
+        """Start a new epoch after a user command or an idle timeout."""
+        self.phase = "warming"
+        self.epoch_id += 1
+        self.epoch_turn = 0
+        self.candidate_scores.clear()
+        self.frozen_names = ()
+        self.confirmed_fallback_names = ()
+        self.scene = scene.strip()
+        self.forced_scene = scene.strip()
+        self.freeze_turn = None
+        self.last_turn_ts = None
+        return reason
+
+    def confirm_fallbacks(
+        self,
+        names: tuple[str, ...],
+        *,
+        max_items: int = 8,
+    ) -> None:
+        """Remember model-confirmed Sidecar fallbacks without changing the workset."""
+        merged = list(self.confirmed_fallback_names)
+        for name in names:
+            if name and name not in merged:
+                merged.append(name)
+        self.confirmed_fallback_names = tuple(merged[-max_items:])
+
+    def expire_if_idle(
+        self,
+        *,
+        idle_seconds: float,
+        now: float | None = None,
+    ) -> str | None:
+        """Reset before routing when the current epoch has expired."""
+        if idle_seconds <= 0:
+            raise ValueError("idle_seconds must be greater than zero")
+        timestamp = time.time() if now is None else now
+        if (
+            self.last_turn_ts is not None
+            and timestamp - self.last_turn_ts >= idle_seconds
+        ):
+            return self.reset(reason="timeout_reset")
+        return None
 
     def observe(
         self,
         matches: list[SkillMatch],
         *,
         generation: str,
+        scene: str = "",
         now: float | None = None,
         max_frozen: int = 8,
-        warm_min_turns: int = 2,
-        warm_max_turns: int = 4,
-        stable_overlap: float = 0.60,
-        drift_overlap: float = 0.30,
-        drift_turns: int = 2,
+        warm_turns: int = 3,
         idle_seconds: float = 6 * 60 * 60,
     ) -> list[str]:
-        """Advance once per user turn and return state transition event names."""
+        """Advance the epoch without any content-driven automatic thaw."""
+        if warm_turns <= 0:
+            raise ValueError("warm_turns must be greater than zero")
         events: list[str] = []
         timestamp = time.time() if now is None else now
-        idle = self.last_turn_ts is not None and timestamp - self.last_turn_ts >= idle_seconds
+        expired = self.expire_if_idle(idle_seconds=idle_seconds, now=timestamp)
+        if expired:
+            events.append(expired)
         self.last_turn_ts = timestamp
         self.user_turn += 1
         self.epoch_turn += 1
-        names = tuple(match.name for match in matches)
-
-        if self.skill_generation and generation != self.skill_generation:
-            events.append("version_changed")
-            self._start_new_epoch(names, matches)
         self.skill_generation = generation
 
         if self.phase == "frozen":
-            if names:
-                overlap = _jaccard(set(names), set(self.frozen_names))
-                self.drift_streak = self.drift_streak + 1 if overlap < drift_overlap else 0
-                required_drift = 1 if idle and overlap < drift_overlap else drift_turns
-                if self.drift_streak >= required_drift:
-                    self._start_new_epoch(names, matches)
-                    events.append("thawed")
             return events
 
-        previous = set(self.recent_topk[-1]) if self.recent_topk else set()
-        current = set(names)
-        if previous and current and _jaccard(previous, current) >= stable_overlap:
-            self.stable_streak += 1
-        else:
-            self.stable_streak = 0
-        self.recent_topk.append(names)
-        self.recent_topk = self.recent_topk[-3:]
+        if scene and not self.forced_scene:
+            self.scene = scene.strip()[:80]
+
         for match in matches:
             self.candidate_scores[match.name] = (
                 self.candidate_scores.get(match.name, 0.0) + match.score
             )
 
-        stable_ready = self.epoch_turn >= warm_min_turns and self.stable_streak >= 1
-        timeout_ready = self.epoch_turn >= warm_max_turns
-        if self.candidate_scores and (stable_ready or timeout_ready):
-            ranked = sorted(
-                self.candidate_scores,
-                key=lambda name: (-self.candidate_scores[name], name),
-            )[:max_frozen]
-            self.frozen_names = tuple(sorted(ranked))
+        if self.candidate_scores and self.epoch_turn >= warm_turns:
+            self.frozen_names = tuple(sorted(self.warming_names(max_frozen)))
             self.phase = "frozen"
             self.freeze_turn = self.user_turn
-            self.drift_streak = 0
-            events.append("frozen" if self.epoch_id == 1 else "refrozen")
+            events.append("frozen")
         return events
-
-    def _start_new_epoch(
-        self,
-        names: tuple[str, ...],
-        matches: list[SkillMatch],
-    ) -> None:
-        self.phase = "warming"
-        self.epoch_id += 1
-        self.epoch_turn = 1
-        self.candidate_scores = {match.name: match.score for match in matches}
-        self.recent_topk = [names]
-        self.frozen_names = ()
-        self.stable_streak = 0
-        self.drift_streak = 0
-        self.freeze_turn = None

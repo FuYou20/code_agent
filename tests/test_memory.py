@@ -10,8 +10,8 @@ from myagent.context import stable
 from myagent.llm.types import LLMResponse, ToolCall
 from myagent.memory.retrieve import retrieve
 from myagent.memory.store import init_db, insert_decision
+from myagent.permissions import PermissionAtom, PermissionTree, ToolPermissionAdapter
 from myagent.tools.registry import TOOLS, register
-from myagent.tools.scope import Scope, ToolRule
 
 
 @pytest.fixture(autouse=True)
@@ -90,6 +90,13 @@ class StaticAnswerClient:
         return LLMResponse(content="ack")
 
 
+def _bind_write_permission(state: SessionState, workspace) -> None:
+    tree = PermissionTree(workspace, [PermissionAtom.write("file_write", ".")])
+    tree.attach_agent(tree.ROOT_ID, state.agent_id)
+    state.permission_tree = tree
+    state.permission_adapter = ToolPermissionAdapter(workspace)
+
+
 def test_successful_write_is_recalled_in_sidecar_but_not_history(monkeypatch, tmp_path) -> None:
     monkeypatch.setenv("MYAGENT_HOME", str(tmp_path / "home"))
     stable.STABLE_PREFIX = "stable"
@@ -106,19 +113,18 @@ def test_successful_write_is_recalled_in_sidecar_but_not_history(monkeypatch, tm
         lambda path, content: {"path": path, "bytes_written": len(content)},
         risk="high",
     )
-    scope = Scope({"file_write": ToolRule("file_write", lambda _params: True)})
     state = SessionState(
         session_id="session-1",
+        agent_id="root-1",
         cwd=str(tmp_path),
-        scope=scope,
         memory_conn=conn,
     )
+    _bind_write_permission(state, tmp_path)
 
     answer = run_turn(
         state,
         "Update the example module",
         WriteThenAnswerClient(),
-        scope,
         lambda _call: True,
     )
     assert answer == "Updated src/example.py successfully."
@@ -127,10 +133,10 @@ def test_successful_write_is_recalled_in_sidecar_but_not_history(monkeypatch, tm
     assert "Updated src/example.py successfully." in recalled
 
     capture = CaptureAnswerClient()
-    run_turn(state, "What changed in example.py?", capture, scope, lambda _call: True)
+    run_turn(state, "What changed in example.py?", capture, lambda _call: True)
     current_sidecar = capture.messages[-1].content
-    assert "[决策 kind=diff files=src/example.py]" in current_sidecar
-    assert all("[决策 kind=diff" not in message.content for message in state.history)
+    assert "[决策 kind=experience files=src/example.py]" in current_sidecar
+    assert all("[决策 kind=experience" not in message.content for message in state.history)
     conn.close()
 
 
@@ -147,18 +153,17 @@ def test_failed_write_is_not_recorded(monkeypatch, tmp_path) -> None:
         fail_write,
         risk="high",
     )
-    scope = Scope({"file_write": ToolRule("file_write", lambda _params: True)})
     state = SessionState(
         session_id="session-2",
+        agent_id="root-2",
         cwd=str(tmp_path),
-        scope=scope,
         memory_conn=conn,
     )
+    _bind_write_permission(state, tmp_path)
     run_turn(
         state,
         "Update broken.py",
         WriteThenAnswerClient(),
-        scope,
         lambda _call: True,
     )
     count = conn.execute("SELECT COUNT(*) FROM decisions").fetchone()[0]
@@ -185,18 +190,17 @@ def test_twenty_turn_session_still_recalls_earlier_file_change(monkeypatch, tmp_
         lambda path, content: {"path": path, "bytes_written": len(content)},
         risk="high",
     )
-    scope = Scope({"file_write": ToolRule("file_write", lambda _params: True)})
     state = SessionState(
         session_id="long-session",
+        agent_id="root-long",
         cwd=str(tmp_path),
-        scope=scope,
         memory_conn=conn,
     )
+    _bind_write_permission(state, tmp_path)
     run_turn(
         state,
         "Update the example module",
         WriteThenAnswerClient(),
-        scope,
         lambda _call: True,
     )
     for turn in range(2, 20):
@@ -204,7 +208,6 @@ def test_twenty_turn_session_still_recalls_earlier_file_change(monkeypatch, tmp_
             state,
             f"unrelated conversation turn {turn}",
             StaticAnswerClient(),
-            scope,
             lambda _call: True,
         )
 
@@ -213,9 +216,8 @@ def test_twenty_turn_session_still_recalls_earlier_file_change(monkeypatch, tmp_
         state,
         "On turn 20, what changed in example.py?",
         capture,
-        scope,
         lambda _call: True,
     )
-    assert "[决策 kind=diff files=src/example.py]" in capture.messages[-1].content
-    assert all("[决策 kind=diff" not in message.content for message in state.history)
+    assert "[决策 kind=experience files=src/example.py]" in capture.messages[-1].content
+    assert all("[决策 kind=experience" not in message.content for message in state.history)
     conn.close()

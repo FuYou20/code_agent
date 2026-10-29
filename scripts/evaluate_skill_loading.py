@@ -89,6 +89,7 @@ def build_skill_index() -> list[dict]:
             index.append(
                 {
                     "name": f"{topic}-{_slug(action)}",
+                    "scene": topic,
                     "description": (
                         f"A {topic} workflow for {action}, including verification, "
                         f"failure analysis, and a concise handoff."
@@ -224,7 +225,7 @@ def run_strategy(
         elif strategy == "oracle":
             system_names = set()
             sidecar_names = expected
-        elif strategy == "warm_stable":
+        elif strategy in {"warm_stable", "scene_epoch"}:
             events = state.observe(matches, generation=generation, now=float(number * 60))
             transitions.extend({"turn": number, "event": event, "epoch": state.epoch_id} for event in events)
             system_names = set(state.frozen_names)
@@ -259,14 +260,18 @@ def run_strategy(
         "stable_3_turn_windows": stable_windows,
         "first_switch_available": first_switch_available,
         "transitions": transitions,
-        "final_frozen_size": len(state.frozen_names) if strategy == "warm_stable" else None,
+        "final_frozen_size": (
+            len(state.frozen_names)
+            if strategy in {"warm_stable", "scene_epoch"}
+            else None
+        ),
     }
 
 
 def evaluate() -> dict:
     index = build_skill_index()
     scenarios = build_scenarios()
-    strategies = ("full_sidecar", "full_system", "top_k", "warm_stable", "oracle")
+    strategies = ("full_sidecar", "full_system", "top_k", "scene_epoch", "oracle")
     rows = [
         {"scenario": scenario, **run_strategy(strategy, turns, index)}
         for scenario, turns in scenarios.items()

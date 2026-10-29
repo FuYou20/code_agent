@@ -14,8 +14,8 @@ an optional parent-context summary, and optional Skill names. The manager:
 2. derives or reuses a permission node under the parent;
 3. mounts the new agent;
 4. filters the parent's tool descriptions by the child atom set;
-5. exposes only Skills whose required atoms intersect the child policy (the
-   child still cannot use any path outside its own narrower atoms);
+5. exposes only useful Skill descriptions whose declared requirements intersect
+   the child policy; this is context filtering, not authorization;
 6. creates an immutable `ChildContext` containing the inherited parent prompt,
    task, summary, filtered tools, filtered Skills, and permission atoms.
 

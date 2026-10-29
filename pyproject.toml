@@ -6,7 +6,7 @@ build-backend = "setuptools.build_meta"
 [project]
 name = "myagent"
 version = "0.1.0"
-description = "A lightweight, cache-stable command-line coding agent"
+description = "A lightweight evolvable coding agent with cache-aware context and atomic permissions"
 readme = "README.md"
 requires-python = ">=3.11"
 dependencies = [

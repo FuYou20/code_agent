@@ -1,25 +1,12 @@
-"""Register all six built-in tools and construct their default scope."""
+"""Register built-in tools and declare their root permission atoms."""
 
 from __future__ import annotations
 
-import re
 from pathlib import Path
 
+from ...permissions.model import PermissionAtom
 from ..registry import TOOLS
-from ..scope import Scope, ToolRule
 from . import file_read, file_write, git_commit, git_read, terminal_exec, test_run
-
-
-def _is_within(path_value: object, cwd: Path) -> bool:
-    if not isinstance(path_value, str):
-        return False
-    candidate = Path(path_value)
-    resolved = (cwd / candidate).resolve() if not candidate.is_absolute() else candidate.resolve()
-    try:
-        resolved.relative_to(cwd.resolve())
-        return True
-    except ValueError:
-        return False
 
 
 def register_all(config: dict, cwd: str | Path = ".") -> None:
@@ -34,25 +21,28 @@ def register_all(config: dict, cwd: str | Path = ".") -> None:
     test_run.register(workdir)
 
 
-def default_scope(config: dict, cwd: str | Path = ".") -> Scope:
-    """Allow built-ins while retaining parameter checks and later high-risk approval."""
-    workdir = Path(cwd).resolve()
-    patterns = [re.compile(pattern) for pattern in config["tools"]["terminal_whitelist"]]
+def default_permission_atoms() -> tuple[PermissionAtom, ...]:
+    """Return the root policy for the fixed built-in tool set.
 
-    def command_allowed(params: dict) -> bool:
-        command = params.get("command")
-        return isinstance(command, str) and any(pattern.match(command) for pattern in patterns)
-
-    rules: dict[str, ToolRule] = {}
-    for name in sorted(TOOLS):
-        matcher = lambda _params: True
-        description = "built-in tool"
-        if name == "terminal_exec":
-            matcher = command_allowed
-            description = "command must match terminal_whitelist"
-        elif name == "file_write":
-            matcher = lambda params: _is_within(params.get("path"), workdir)
-            description = f"path must stay under {workdir}"
-        rules[name] = ToolRule(name, matcher, description)
-    return Scope(tools=rules)
+    Command whitelisting and high-risk approval remain execution constraints;
+    filesystem authority itself is represented only by these atoms.
+    """
+    known = {
+        "file_read": PermissionAtom.read("file_read", "."),
+        "file_write": PermissionAtom.write("file_write", "."),
+        "git_read": PermissionAtom.read("git_read", "."),
+        "git_commit": PermissionAtom.read_write(
+            "git_commit", read=(".",), write=(".",)
+        ),
+        "terminal_exec": PermissionAtom.read_write(
+            "terminal_exec", read=(".",), write=(".",)
+        ),
+        "test_run": PermissionAtom.read_write(
+            "test_run", read=(".",), write=(".",)
+        ),
+    }
+    return tuple(
+        known.get(name, PermissionAtom.without_files(name))
+        for name in sorted(TOOLS)
+    )
 

@@ -1,17 +1,13 @@
-"""Convert skill permission manifests into non-escalating effective scopes."""
+"""Load and index Skill knowledge without participating in authorization."""
 
 from __future__ import annotations
 
-import fnmatch
-import posixpath
-import re
 from pathlib import Path
 
 import yaml
 from pydantic import ValidationError
 
-from ..tools.scope import Scope, ToolRule, intersect
-from .schema import ScopeManifestItem, Skill, SkillFrontmatter
+from .schema import Skill, SkillFrontmatter
 
 
 def _skill_file(skill_path: Path) -> Path:
@@ -50,6 +46,7 @@ def load_index(store: Path) -> list[dict]:
             {
                 "name": skill.frontmatter.name,
                 "description": skill.frontmatter.description,
+                "scene": skill.frontmatter.scene,
                 "triggers": list(skill.frontmatter.triggers),
                 "path": skill.path,
             }
@@ -78,69 +75,4 @@ def find_relevant(user_input: str, index: list[dict]) -> list[str]:
             if name not in relevant:
                 relevant.append(name)
     return relevant
-
-
-def _normalize_path(value: str) -> str:
-    return posixpath.normpath(value.replace("\\", "/"))
-
-
-def _path_allowed(path: object, allowed_paths: list[str]) -> bool:
-    if not isinstance(path, str):
-        return False
-    target = _normalize_path(path)
-    if target == ".." or target.startswith("../"):
-        return False
-    target_is_absolute = target.startswith("/") or bool(re.match(r"^[A-Za-z]:/", target))
-
-    for configured in allowed_paths:
-        allowed = _normalize_path(configured)
-        if allowed in {"", "."}:
-            return not target_is_absolute
-        if any(character in allowed for character in "*?["):
-            if fnmatch.fnmatchcase(target, allowed):
-                return True
-            continue
-        prefix = allowed.rstrip("/") + "/"
-        if target == allowed or target.startswith(prefix):
-            return True
-    return False
-
-
-def _item_matcher(item: ScopeManifestItem):
-    command_regex = re.compile(item.command_pattern) if item.command_pattern is not None else None
-    allowed_paths = list(item.paths) if item.paths is not None else None
-
-    def matches(params: dict) -> bool:
-        if allowed_paths is not None and not _path_allowed(params.get("path"), allowed_paths):
-            return False
-        if command_regex is not None:
-            command = params.get("command")
-            if not isinstance(command, str) or command_regex.match(command) is None:
-                return False
-        return True
-
-    return matches
-
-
-def activate(skill: Skill, parent_scope: Scope) -> Scope:
-    """Intersect a skill manifest with its parent scope without adding tools."""
-    grouped: dict[str, list[ScopeManifestItem]] = {}
-    for item in skill.frontmatter.scope_manifest:
-        grouped.setdefault(item.tool, []).append(item)
-
-    rules: dict[str, ToolRule] = {}
-    for tool_name, items in grouped.items():
-        matchers = [_item_matcher(item) for item in items]
-
-        def matches(params: dict, item_matchers=matchers) -> bool:
-            return any(matcher(params) for matcher in item_matchers)
-
-        rules[tool_name] = ToolRule(
-            tool_name=tool_name,
-            matches=matches,
-            description=f"skill:{skill.frontmatter.name}",
-        )
-
-    child = Scope(tools=rules)
-    return intersect(parent_scope, child)
 

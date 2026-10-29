@@ -61,3 +61,60 @@ def test_empty_followup_uses_history_without_new_sidecar(tmp_path) -> None:
     messages = build_messages(state, "")
     assert messages == [messages[0], prior]
 
+
+def test_frozen_l0_moves_to_session_system_while_l1_stays_in_sidecar(tmp_path) -> None:
+    stable.STABLE_PREFIX = "stable"
+    state = SessionState(
+        session_id="frozen",
+        cwd=str(tmp_path),
+        skill_strategy="scene_epoch",
+        skill_index=[
+            {"name": "run-tests", "description": "Run pytest."},
+            {"name": "read-repo", "description": "Read repository files."},
+        ],
+    )
+    state.skill_load_state.phase = "frozen"
+    state.skill_load_state.frozen_names = ("run-tests", "read-repo")
+    messages = build_messages(state, "fix it", skill_items=[], skill_body="Run safely.")
+    assert "固化 Skill 工作集" in messages[0].content
+    assert "read-repo: Read repository files." in messages[0].content
+    assert "run-tests: Run pytest." in messages[0].content
+    assert "可用技能（L0）" not in messages[-1].content
+    assert "Run safely." in messages[-1].content
+
+
+def test_temporary_out_of_workset_l0_stays_in_sidecar(tmp_path) -> None:
+    stable.STABLE_PREFIX = "stable"
+    state = SessionState(
+        session_id="temporary",
+        cwd=str(tmp_path),
+        skill_strategy="scene_epoch",
+        skill_index=[{"name": "run-tests", "description": "Run pytest."}],
+    )
+    state.skill_load_state.phase = "frozen"
+    state.skill_load_state.frozen_names = ("run-tests",)
+    temporary = {"name": "write-report", "description": "Write a report."}
+    messages = build_messages(state, "write it", skill_items=[temporary])
+    assert "run-tests: Run pytest." in messages[0].content
+    assert "write-report: Write a report." in messages[-1].content
+
+
+def test_full_system_places_all_l0_before_history(tmp_path) -> None:
+    stable.STABLE_PREFIX = "stable"
+    prior = Message(role="assistant", content="prior history")
+    state = SessionState(
+        session_id="full-system",
+        cwd=str(tmp_path),
+        history=[prior],
+        skill_strategy="full_system",
+        skill_index=[
+            {"name": "skill-b", "description": "B"},
+            {"name": "skill-a", "description": "A"},
+        ],
+    )
+    messages = build_messages(state, "current", skill_items=[])
+    assert "全量 Skill 目录" in messages[0].content
+    assert messages[0].content.index("skill-a: A") < messages[0].content.index("skill-b: B")
+    assert messages[1] is prior
+    assert "skill-a: A" not in messages[-1].content
+

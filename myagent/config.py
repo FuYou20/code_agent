@@ -18,9 +18,13 @@ DEFAULT_CONFIG = {
     },
     "agent": {"max_steps": 30},
     "skills": {
-        "strategy": "full_sidecar",
+        "strategy": "full_system",
         "top_k": 5,
+        "candidate_k": 20,
         "activation_min_score": 80,
+        "max_frozen": 8,
+        "warm_turns": 3,
+        "idle_seconds": 21600,
     },
     "tools": {
         "terminal_whitelist": [

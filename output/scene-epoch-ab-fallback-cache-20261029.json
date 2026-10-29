@@ -1,0 +1,372 @@
+{
+  "method": {
+    "skill_count": 100,
+    "scenarios": 3,
+    "turns": 19,
+    "token_scope": "all provider prompt tokens, including query expansion and reranking",
+    "visibility_definition": "required Skill name is present in the main Agent System/Sidecar/L1 prompt"
+  },
+  "provider": "deepseek",
+  "model": "deepseek-flash",
+  "full_system": {
+    "turns": 19,
+    "api_calls": 19,
+    "main_calls": 19,
+    "prompt_tokens": 77426,
+    "main_prompt_tokens": 77426,
+    "router_prompt_tokens": 0,
+    "main_cached_tokens": 55296,
+    "router_cached_tokens": 0,
+    "cached_tokens": 55296,
+    "uncached_prompt_tokens": 22130,
+    "required_skill_visible": 19,
+    "required_skill_turns": 19,
+    "system_prompt_changes": 0,
+    "strategy": "full_system",
+    "cache_ratio": 0.7141786996616124,
+    "main_cache_ratio": 0.7141786996616124,
+    "required_skill_visibility": 1.0,
+    "sessions": [
+      {
+        "scenario": "stable_topic",
+        "turns": 6,
+        "api_calls": 6,
+        "main_calls": 6,
+        "prompt_tokens": 24390,
+        "main_prompt_tokens": 24390,
+        "router_prompt_tokens": 0,
+        "main_cached_tokens": 17280,
+        "router_cached_tokens": 0,
+        "cached_tokens": 17280,
+        "uncached_prompt_tokens": 7110,
+        "cache_ratio": 0.7084870848708487,
+        "main_cache_ratio": 0.7084870848708487,
+        "required_skill_visible": 6,
+        "required_skill_turns": 6,
+        "required_skill_visibility": 1.0,
+        "visibility_rows": [
+          {
+            "required_skill": "code-pytest-failure",
+            "visible": true
+          },
+          {
+            "required_skill": "code-pytest-failure",
+            "visible": true
+          },
+          {
+            "required_skill": "code-pytest-failure",
+            "visible": true
+          },
+          {
+            "required_skill": "code-pytest-failure",
+            "visible": true
+          },
+          {
+            "required_skill": "code-pytest-failure",
+            "visible": true
+          },
+          {
+            "required_skill": "code-pytest-failure",
+            "visible": true
+          }
+        ],
+        "system_prompt_changes": 0,
+        "final_phase": "warming",
+        "frozen_skills": []
+      },
+      {
+        "scenario": "one_turn_aside",
+        "turns": 6,
+        "api_calls": 6,
+        "main_calls": 6,
+        "prompt_tokens": 24424,
+        "main_prompt_tokens": 24424,
+        "router_prompt_tokens": 0,
+        "main_cached_tokens": 17280,
+        "router_cached_tokens": 0,
+        "cached_tokens": 17280,
+        "uncached_prompt_tokens": 7144,
+        "cache_ratio": 0.7075008188666885,
+        "main_cache_ratio": 0.7075008188666885,
+        "required_skill_visible": 6,
+        "required_skill_turns": 6,
+        "required_skill_visibility": 1.0,
+        "visibility_rows": [
+          {
+            "required_skill": "code-pytest-failure",
+            "visible": true
+          },
+          {
+            "required_skill": "code-pytest-failure",
+            "visible": true
+          },
+          {
+            "required_skill": "code-pytest-failure",
+            "visible": true
+          },
+          {
+            "required_skill": "code-pytest-failure",
+            "visible": true
+          },
+          {
+            "required_skill": "writing-release-notes",
+            "visible": true
+          },
+          {
+            "required_skill": "code-pytest-failure",
+            "visible": true
+          }
+        ],
+        "system_prompt_changes": 0,
+        "final_phase": "warming",
+        "frozen_skills": []
+      },
+      {
+        "scenario": "sustained_drift",
+        "turns": 7,
+        "api_calls": 7,
+        "main_calls": 7,
+        "prompt_tokens": 28612,
+        "main_prompt_tokens": 28612,
+        "router_prompt_tokens": 0,
+        "main_cached_tokens": 20736,
+        "router_cached_tokens": 0,
+        "cached_tokens": 20736,
+        "uncached_prompt_tokens": 7876,
+        "cache_ratio": 0.7247308821473507,
+        "main_cache_ratio": 0.7247308821473507,
+        "required_skill_visible": 7,
+        "required_skill_turns": 7,
+        "required_skill_visibility": 1.0,
+        "visibility_rows": [
+          {
+            "required_skill": "code-pytest-failure",
+            "visible": true
+          },
+          {
+            "required_skill": "code-pytest-failure",
+            "visible": true
+          },
+          {
+            "required_skill": "code-pytest-failure",
+            "visible": true
+          },
+          {
+            "required_skill": "code-pytest-failure",
+            "visible": true
+          },
+          {
+            "required_skill": "writing-release-notes",
+            "visible": true
+          },
+          {
+            "required_skill": "writing-release-notes",
+            "visible": true
+          },
+          {
+            "required_skill": "writing-release-notes",
+            "visible": true
+          }
+        ],
+        "system_prompt_changes": 0,
+        "final_phase": "warming",
+        "frozen_skills": []
+      }
+    ]
+  },
+  "scene_epoch": {
+    "turns": 19,
+    "api_calls": 29,
+    "main_calls": 19,
+    "prompt_tokens": 39619,
+    "main_prompt_tokens": 32021,
+    "router_prompt_tokens": 7598,
+    "main_cached_tokens": 15232,
+    "router_cached_tokens": 4352,
+    "cached_tokens": 19584,
+    "uncached_prompt_tokens": 20035,
+    "required_skill_visible": 19,
+    "required_skill_turns": 19,
+    "system_prompt_changes": 3,
+    "strategy": "scene_epoch",
+    "cache_ratio": 0.4943082864282289,
+    "main_cache_ratio": 0.4756878298616533,
+    "required_skill_visibility": 1.0,
+    "sessions": [
+      {
+        "scenario": "stable_topic",
+        "turns": 6,
+        "api_calls": 8,
+        "main_calls": 6,
+        "prompt_tokens": 11491,
+        "main_prompt_tokens": 10038,
+        "router_prompt_tokens": 1453,
+        "main_cached_tokens": 4736,
+        "router_cached_tokens": 1152,
+        "cached_tokens": 5888,
+        "uncached_prompt_tokens": 5603,
+        "cache_ratio": 0.5124010094856845,
+        "main_cache_ratio": 0.471807132894999,
+        "required_skill_visible": 6,
+        "required_skill_turns": 6,
+        "required_skill_visibility": 1.0,
+        "visibility_rows": [
+          {
+            "required_skill": "code-pytest-failure",
+            "visible": true
+          },
+          {
+            "required_skill": "code-pytest-failure",
+            "visible": true
+          },
+          {
+            "required_skill": "code-pytest-failure",
+            "visible": true
+          },
+          {
+            "required_skill": "code-pytest-failure",
+            "visible": true
+          },
+          {
+            "required_skill": "code-pytest-failure",
+            "visible": true
+          },
+          {
+            "required_skill": "code-pytest-failure",
+            "visible": true
+          }
+        ],
+        "system_prompt_changes": 1,
+        "final_phase": "frozen",
+        "frozen_skills": [
+          "code-code-review",
+          "code-dependency-upgrade",
+          "code-exception-handling",
+          "code-logging-setup",
+          "code-package-build",
+          "code-pytest-failure",
+          "code-type-checking",
+          "code-unit-test-design"
+        ]
+      },
+      {
+        "scenario": "one_turn_aside",
+        "turns": 6,
+        "api_calls": 10,
+        "main_calls": 6,
+        "prompt_tokens": 13149,
+        "main_prompt_tokens": 10075,
+        "router_prompt_tokens": 3074,
+        "main_cached_tokens": 4736,
+        "router_cached_tokens": 2176,
+        "cached_tokens": 6912,
+        "uncached_prompt_tokens": 6237,
+        "cache_ratio": 0.5256673511293635,
+        "main_cache_ratio": 0.4700744416873449,
+        "required_skill_visible": 6,
+        "required_skill_turns": 6,
+        "required_skill_visibility": 1.0,
+        "visibility_rows": [
+          {
+            "required_skill": "code-pytest-failure",
+            "visible": true
+          },
+          {
+            "required_skill": "code-pytest-failure",
+            "visible": true
+          },
+          {
+            "required_skill": "code-pytest-failure",
+            "visible": true
+          },
+          {
+            "required_skill": "code-pytest-failure",
+            "visible": true
+          },
+          {
+            "required_skill": "writing-release-notes",
+            "visible": true
+          },
+          {
+            "required_skill": "code-pytest-failure",
+            "visible": true
+          }
+        ],
+        "system_prompt_changes": 1,
+        "final_phase": "frozen",
+        "frozen_skills": [
+          "code-code-review",
+          "code-dependency-upgrade",
+          "code-exception-handling",
+          "code-logging-setup",
+          "code-performance-profile",
+          "code-pytest-failure",
+          "code-type-checking",
+          "code-unit-test-design"
+        ]
+      },
+      {
+        "scenario": "sustained_drift",
+        "turns": 7,
+        "api_calls": 11,
+        "main_calls": 7,
+        "prompt_tokens": 14979,
+        "main_prompt_tokens": 11908,
+        "router_prompt_tokens": 3071,
+        "main_cached_tokens": 5760,
+        "router_cached_tokens": 1024,
+        "cached_tokens": 6784,
+        "uncached_prompt_tokens": 8195,
+        "cache_ratio": 0.4529007276854263,
+        "main_cache_ratio": 0.48370843130668456,
+        "required_skill_visible": 7,
+        "required_skill_turns": 7,
+        "required_skill_visibility": 1.0,
+        "visibility_rows": [
+          {
+            "required_skill": "code-pytest-failure",
+            "visible": true
+          },
+          {
+            "required_skill": "code-pytest-failure",
+            "visible": true
+          },
+          {
+            "required_skill": "code-pytest-failure",
+            "visible": true
+          },
+          {
+            "required_skill": "code-pytest-failure",
+            "visible": true
+          },
+          {
+            "required_skill": "writing-release-notes",
+            "visible": true
+          },
+          {
+            "required_skill": "writing-release-notes",
+            "visible": true
+          },
+          {
+            "required_skill": "writing-release-notes",
+            "visible": true
+          }
+        ],
+        "system_prompt_changes": 1,
+        "final_phase": "frozen",
+        "frozen_skills": [
+          "code-code-review",
+          "code-dependency-upgrade",
+          "code-exception-handling",
+          "code-logging-setup",
+          "code-performance-profile",
+          "code-pytest-failure",
+          "code-type-checking",
+          "code-unit-test-design"
+        ]
+      }
+    ]
+  },
+  "prompt_token_reduction": 0.4882985043783742,
+  "uncached_prompt_token_reduction": 0.09466787166741975
+}

@@ -25,7 +25,7 @@ def test_load_index_returns_only_l0_metadata(tmp_path) -> None:
 name: demo-skill
 description: Demo description
 triggers: [demo, 示例]
-scope_manifest:
+permission_requirements:
   - tool: file_read
 ---
 Secret L1 instructions.
@@ -36,6 +36,7 @@ Secret L1 instructions.
         {
             "name": "demo-skill",
             "description": "Demo description",
+            "scene": "general",
             "triggers": ["demo", "示例"],
             "path": str(skill_dir.resolve()),
         }
@@ -51,7 +52,7 @@ def test_load_body_accepts_skill_directory(tmp_path) -> None:
 name: demo
 description: Demo
 triggers: []
-scope_manifest: []
+permission_requirements: []
 ---
 Body text.
 """,

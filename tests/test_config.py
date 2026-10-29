@@ -37,5 +37,5 @@ def test_load_config_uses_myagent_home(monkeypatch, tmp_path) -> None:
     loaded = load_config()
     assert loaded["agent"]["max_steps"] == 7
     assert loaded["llm"] == DEFAULT_CONFIG["llm"]
-    assert loaded["skills"]["strategy"] == "full_sidecar"
+    assert loaded["skills"]["strategy"] == "full_system"
 

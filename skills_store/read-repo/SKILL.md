@@ -1,12 +1,13 @@
 ---
 name: read-repo
 description: 通过 Git 元数据和关键入口文件快速建立仓库结构认知。
+scene: code-development
 triggers:
   - 了解仓库
   - 仓库结构
   - read repo
   - repository overview
-scope_manifest:
+permission_requirements:
   - tool: git_read
   - tool: file_read
     paths:

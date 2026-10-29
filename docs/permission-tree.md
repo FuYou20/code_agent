@@ -1,8 +1,8 @@
-<!-- Design contract for atomic tool-file permissions used by future sub-agents. -->
+<!-- Design contract for atomic tool-file permissions used by all agents. -->
 # Atomic permission tree
 
-The permission tree underpins the child Agent Manager. Neither component is yet
-wired into the current interactive single-agent runtime.
+The permission tree is the sole runtime authority. The interactive root Agent is
+attached to the root node; the child Agent Manager uses the same tree for delegation.
 
 Each node contains only indivisible `PermissionAtom` values. An atom binds one
 tool to its complete file-access footprint; tool names and paths are never
@@ -35,5 +35,7 @@ against the workspace and rejects absolute paths, `..` escapes, and existing
 symlinks that resolve outside it.
 
 The trusted tool adapter must convert a concrete tool call into a request atom
-that describes every file effect. Generic shell execution cannot be safely
-authorized until it runs inside an operating-system filesystem sandbox.
+that describes every file effect. Model-visible tool schemas are filtered by the
+bound node, and every concrete call is checked again before execution. Skill
+requirements never grant or narrow authority. Generic shell execution still needs
+an operating-system filesystem sandbox for strong process-level isolation.

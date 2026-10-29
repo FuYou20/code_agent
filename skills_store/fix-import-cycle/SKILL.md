@@ -1,11 +1,12 @@
 ---
 name: fix-import-cycle
 description: 定位并修复 Python 循环导入，同时用测试验证行为未回归。
+scene: code-repair
 triggers:
   - 循环导入
   - circular import
   - partially initialized module
-scope_manifest:
+permission_requirements:
   - tool: file_read
     paths:
       - .

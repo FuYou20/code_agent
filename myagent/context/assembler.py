@@ -10,6 +10,34 @@ from ..llm.types import Message
 from . import stable
 
 
+def _skill_items_by_name(state: SessionState, names: tuple[str, ...]) -> list[dict]:
+    by_name = {str(item.get("name", "")): item for item in state.skill_index}
+    return [by_name[name] for name in sorted(names) if name in by_name]
+
+
+def _system_skill_block(state: SessionState) -> str:
+    if state.skill_strategy == "full_system":
+        items = sorted(state.skill_index, key=lambda item: str(item.get("name", "")))
+        title = "## 全量 Skill 目录（L0）"
+    elif state.skill_strategy in {"warm_stable", "scene_epoch"}:
+        load_state = state.skill_load_state
+        if load_state.phase != "frozen" or not load_state.frozen_names:
+            return ""
+        items = _skill_items_by_name(state, load_state.frozen_names)
+        title = "## 当前话题的固化 Skill 工作集（L0）"
+    else:
+        return ""
+    lines = [
+        title,
+        "以下条目是会话能力目录，不授予工具权限；实际权限只由当前 Agent 的权限树节点决定。",
+    ]
+    lines.extend(
+        f"- {item['name']}: {item['description']}"
+        for item in items
+    )
+    return "\n".join(lines)
+
+
 def _diff_stat(cwd: str) -> str:
     try:
         result = subprocess.run(
@@ -38,6 +66,9 @@ def build_messages(
     context_parts = ["## 仓库快照", state.repo_snapshot or "(空)"]
     if state.agents_content:
         context_parts.extend(["## AGENTS.md", state.agents_content])
+    system_skill_block = _system_skill_block(state)
+    if system_skill_block:
+        context_parts.extend([system_skill_block])
     system_content = stable.STABLE_PREFIX + "\n\n" + "\n".join(context_parts)
 
     selected_skills = state.skill_index if skill_items is None else skill_items

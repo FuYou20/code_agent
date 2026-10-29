@@ -1,12 +1,13 @@
 ---
 name: run-tests
 description: 运行 pytest，并从首个有因果价值的失败开始解释和定位问题。
+scene: code-repair
 triggers:
   - 跑测试
   - 运行测试
   - pytest
   - test failure
-scope_manifest:
+permission_requirements:
   - tool: test_run
   - tool: file_read
     paths:

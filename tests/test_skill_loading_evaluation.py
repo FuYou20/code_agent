@@ -19,23 +19,23 @@ def test_benchmark_separates_current_baseline_topk_and_warm_strategy() -> None:
     }
     baseline = rows[("A_code_long", "full_sidecar")]
     top_k = rows[("A_code_long", "top_k")]
-    warm = rows[("A_code_long", "warm_stable")]
+    warm = rows[("A_code_long", "scene_epoch")]
     assert top_k["irrelevant_skill_token_proxy"] < baseline["irrelevant_skill_token_proxy"]
     assert warm["irrelevant_skill_token_proxy"] < baseline["irrelevant_skill_token_proxy"]
     assert top_k["availability_recall"] >= 0.95
     assert warm["availability_recall"] >= 0.95
 
 
-def test_switch_is_visible_same_turn_and_one_off_aside_does_not_thaw() -> None:
+def test_switch_is_visible_same_turn_and_content_never_thaws_epoch() -> None:
     report = MODULE.evaluate()
     rows = {
         (row["scenario"], row["strategy"]): row
         for row in report["results"]
     }
-    switched = rows[("C_code_to_writing", "warm_stable")]
-    aside = rows[("E_one_turn_aside", "warm_stable")]
+    switched = rows[("C_code_to_writing", "scene_epoch")]
+    aside = rows[("E_one_turn_aside", "scene_epoch")]
     assert switched["first_switch_available"] is True
-    assert any(item["event"] == "thawed" for item in switched["transitions"])
+    assert not any(item["event"] == "thawed" for item in switched["transitions"])
     assert not any(item["event"] == "thawed" for item in aside["transitions"])
 
 
