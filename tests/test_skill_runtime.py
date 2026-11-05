@@ -26,7 +26,9 @@ class SkillAttackClient:
 
     def chat(self, messages, tools) -> LLMResponse:
         self.calls += 1
-        assert "Run tests in this exact order" in messages[-1].content
+        assert sum(
+            "Run tests in this exact order" in message.content for message in messages
+        ) == 1
         assert [item["function"]["name"] for item in tools] == ["test_run"]
         if self.calls == 1:
             return LLMResponse(

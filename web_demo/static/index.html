@@ -1,0 +1,195 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="description" content="MyAgent：面向上下文效率、权限收敛与经验治理的轻量级 Coding Agent。">
+  <title>MyAgent · 可进化 Coding Agent</title>
+  <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' fill='%2311130f'/%3E%3Ctext x='16' y='21' text-anchor='middle' font-family='monospace' font-size='15' fill='%23d8ff43'%3EM%3C/text%3E%3C/svg%3E">
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=DM+Mono:wght@400;500&family=Manrope:wght@400;500;600;700&family=Noto+Sans+SC:wght@400;500;600;700&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="/assets/styles.css">
+  <script defer src="/assets/landing.js"></script>
+</head>
+<body>
+  <div class="grain" aria-hidden="true"></div>
+  <header class="nav shell">
+    <a class="brand" href="#top" aria-label="MyAgent 首页">
+      <span class="brand-mark">M</span>
+      <span>MyAgent</span>
+    </a>
+    <nav aria-label="主导航">
+      <a href="#design">核心设计</a>
+      <a href="#evidence">实验结果</a>
+      <a href="#demo">在线体验</a>
+    </nav>
+    <a class="nav-link" href="https://github.com/FuYou20/code_agent" target="_blank" rel="noreferrer">GitHub ↗</a>
+  </header>
+
+  <main id="top">
+    <section class="hero shell">
+      <div class="hero-copy reveal">
+        <p class="eyebrow"><span></span> Evolvable Coding Agent</p>
+        <h1><span>更少的上下文，</span><em>更克制的能力。</em></h1>
+        <p class="hero-lead">MyAgent 面向长期运行的 Coding Agent：控制 Skill 带来的上下文膨胀，以树形权限阻断越权，并让经验在验证后才进入决策链。</p>
+        <div class="hero-actions">
+          <a class="button primary" href="/terminal">进入在线 TUI <span>→</span></a>
+          <a class="button ghost" href="#design">查看核心设计</a>
+        </div>
+        <p class="demo-note"><span class="live-dot"></span> 公共实例 · 只读沙盒 · 每个浏览器独立会话</p>
+      </div>
+
+      <div class="hero-console reveal" aria-label="MyAgent 运行状态示意">
+        <div class="console-bar">
+          <div><i></i><i></i><i></i></div>
+          <span>myagent / runtime</span>
+          <span class="console-status">● LIVE</span>
+        </div>
+        <div class="console-body">
+          <div class="console-chat">
+            <p class="prompt">› 分析订单接口变慢的可能原因</p>
+            <p class="muted">scene <b>backend-debug</b> · turn 03</p>
+            <div class="trace-line"><span>01</span><strong>retrieve_memory</strong><small>18 ms</small></div>
+            <div class="trace-line"><span>02</span><strong>activate_skill</strong><small>api-diagnosis</small></div>
+            <div class="trace-line"><span>03</span><strong>file_read</strong><small>allowed</small></div>
+            <div class="answer-line">从调用链看，先检查连接池等待时间，再定位慢 SQL 与下游超时……</div>
+          </div>
+          <aside class="console-side">
+            <p>WORKSET <b>6 / 8</b></p>
+            <div class="meter"><i style="width:75%"></i></div>
+            <p>SIDECAR <b>2 items</b></p>
+            <div class="tag-row"><span>memory</span><span>skill:L1</span></div>
+            <p>PERMISSION <b class="safe">read-only</b></p>
+            <p class="token-label">SESSION TOKENS</p>
+            <strong class="token-value">3,842</strong>
+          </aside>
+        </div>
+      </div>
+    </section>
+
+    <section class="numbers shell" aria-label="项目验证数据">
+      <article><strong>48.83<sup>%</sup></strong><span>总输入 Token 降低</span></article>
+      <article><strong>19<sup>/19</sup></strong><span>观察到必需 Skill 可见</span></article>
+      <article><strong>128<sup></sup></strong><span>自动化测试通过</span></article>
+      <p>工程 A/B：3 类连续会话、每类 19 轮。用于验证设计，不代表大规模统计结论。</p>
+    </section>
+
+    <section class="problem-band">
+      <div class="shell problem-grid reveal">
+        <p class="section-index">01 / WHY</p>
+        <div>
+          <h2>Agent 越运行，<br>上下文和能力越容易失控。</h2>
+          <p>全量 Skill 持续占用输入；动态内容破坏 Prompt 前缀；子 Agent 的工具与路径边界容易扩散；未经验证的成功经验还可能把一次偶然做法固化为长期偏见。</p>
+        </div>
+        <div class="problem-list">
+          <span><b>01</b> 无关 Skill 消耗 Token</span>
+          <span><b>02</b> 动态前缀扰动 KV Cache</span>
+          <span><b>03</b> 子 Agent 权限逐层扩张</span>
+          <span><b>04</b> 错误经验长期污染决策</span>
+        </div>
+      </div>
+    </section>
+
+    <section class="design shell" id="design">
+      <div class="section-head reveal">
+        <p class="section-index">02 / DESIGN</p>
+        <h2>三条约束，构成一套长期运行机制。</h2>
+      </div>
+
+      <article class="design-row reveal">
+        <div class="design-no">01</div>
+        <div class="design-copy">
+          <p class="eyebrow">Context Efficiency</p>
+          <h3>稳定内容靠前，动态信息靠后。</h3>
+          <p>会话开始宽召回候选 Skill，前三轮累计选择后固化工作集；稳定 Skill 进入 System Prefix，Memory 与临时 Skill 只在当前轮进入 Sidecar。既保住必要能力可见性，也避免 100 个 Skill 每轮全量输入。</p>
+        </div>
+        <div class="layer-stack" aria-label="三层上下文结构">
+          <div class="layer stable"><small>01 · STABLE</small><b>System Prefix</b><span>身份 · 协议 · 权限 · 工作集</span></div>
+          <div class="layer history"><small>02 · APPEND</small><b>Conversation</b><span>对话 · 工具结果 · 压缩摘要</span></div>
+          <div class="layer sidecar"><small>03 · EPHEMERAL</small><b>Sidecar</b><span>Memory · 临时 Skill · RAG</span></div>
+        </div>
+      </article>
+
+      <article class="design-row reverse reveal">
+        <div class="design-no">02</div>
+        <div class="design-copy">
+          <p class="eyebrow">Least Privilege</p>
+          <h3>权限不是 Prompt 描述，而是运行时事实。</h3>
+          <p>将“工具、路径、读写模式”绑定成不可拆分的权限原子。子 Agent 创建时只能申请父节点可完整覆盖的子集；调用前裁剪可见工具，执行前再把真实参数转成请求原子复核。</p>
+        </div>
+        <div class="permission-tree" aria-label="原子权限树示意">
+          <div class="node root">root <span>read / repo</span></div>
+          <div class="branch"><i></i><div class="node active">agent-a <span>read / src</span></div></div>
+          <div class="branch"><i></i><div class="node">agent-b <span>git / inspect</span></div></div>
+          <div class="branch denied"><i></i><div class="node">request <span>write / secrets</span></div><b>DENIED</b></div>
+        </div>
+      </article>
+
+      <article class="design-row reveal">
+        <div class="design-no">03</div>
+        <div class="design-copy">
+          <p class="eyebrow">Evolution Governance</p>
+          <h3>只从证据中学习，也允许遗忘。</h3>
+          <p>成功任务沉淀为具体 Memory 与可迁移 Skill；新经验先进入验证期，通过正确性与 Token 收益 A/B 后生效。生效后若在召回场景累计造成错误，则退役并停止自动召回。</p>
+        </div>
+        <div class="lifecycle" aria-label="经验生命周期">
+          <div><span>01</span><b>沉淀</b><small>真实工具轨迹</small></div><i>→</i>
+          <div><span>02</span><b>验证</b><small>正确性 + Token</small></div><i>→</i>
+          <div class="on"><span>03</span><b>生效</b><small>按需召回</small></div><i>→</i>
+          <div><span>04</span><b>退役</b><small>错误反馈</small></div>
+        </div>
+      </article>
+    </section>
+
+    <section class="evidence" id="evidence">
+      <div class="shell evidence-grid reveal">
+        <div>
+          <p class="section-index">03 / EVIDENCE</p>
+          <h2>不是只少放内容，<br>而是保住需要的内容。</h2>
+          <p>对照组在每轮 System Prompt 中加载全部 100 个 Skill；实验组通过场景工作集和 Sidecar 按需加载。统计包含查询扩展与重排等额外模型调用。</p>
+          <p class="fine-print">样本为 3 类 19 轮连续会话，轮次并非独立样本；19/19 是该工程测试内的观察结果，不宣称泛化为 100% 召回保证。</p>
+        </div>
+        <div class="chart" aria-label="A/B Token 对比">
+          <div class="chart-head"><span>输入 Token / 19 turns</span><span>lower is better ↓</span></div>
+          <div class="bar-group">
+            <div class="bar-label"><b>全量加载</b><span>77,426</span></div>
+            <div class="bar baseline"><i></i></div>
+          </div>
+          <div class="bar-group">
+            <div class="bar-label"><b>动态工作集</b><span>39,619</span></div>
+            <div class="bar optimized"><i></i><em>−48.83%</em></div>
+          </div>
+          <div class="chart-foot">
+            <span><i class="cyan"></i>必需 Skill 可见 <b>19/19</b></span>
+            <span><i class="orange"></i>未缓存输入 <b>−9.47%</b></span>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <section class="demo shell" id="demo">
+      <div class="demo-card reveal">
+        <div>
+          <p class="section-index">04 / TRY IT</p>
+          <h2>现在，打开真实的运行界面。</h2>
+          <p>在线 TUI 会创建一次性工作区，你可以让 Agent 阅读示例仓库、分析代码和查看 Git 状态。会话结束后，工作区与状态一并删除。</p>
+          <div class="safety">
+            <span>✓ 只读工具</span><span>✓ 隔离工作区</span><span>✓ 不共享记忆</span><span>✓ 会话限额</span>
+          </div>
+        </div>
+        <div class="demo-action">
+          <a class="button light" href="/terminal">启动在线 TUI <span>↗</span></a>
+          <small>需要实时模型调用，繁忙时可能需要等待</small>
+        </div>
+      </div>
+    </section>
+  </main>
+
+  <footer class="shell">
+    <div class="brand"><span class="brand-mark">M</span><span>MyAgent</span></div>
+    <p>Built for controlled context, bounded permissions, and evidence-driven evolution.</p>
+    <a href="https://github.com/FuYou20/code_agent" target="_blank" rel="noreferrer">Source on GitHub ↗</a>
+  </footer>
+</body>
+</html>

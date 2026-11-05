@@ -5,6 +5,7 @@ from __future__ import annotations
 import os
 import subprocess
 import sys
+import time
 import uuid
 from pathlib import Path
 
@@ -20,6 +21,7 @@ from .llm.client import OpenAIClient
 from .llm.types import ToolCall
 from .memory.store import init_db
 from .home import get_home
+from .evolution.artifacts import EvolutionArtifactManager, TokenWeights
 from .permissions import PermissionTree, ToolPermissionAdapter
 from .skills.manager import load_index
 from .skills.distiller import distill
@@ -54,12 +56,34 @@ def _read_agents_once(cwd: Path) -> str:
         return ""
 
 
-def _load_skill_index() -> list[dict]:
+def _load_skill_index(lifecycle: EvolutionArtifactManager | None = None) -> list[dict]:
     bundled_store = Path(__file__).resolve().parents[1] / "skills_store"
     runtime_store = get_home() / "skills_store"
     runtime_store.mkdir(parents=True, exist_ok=True)
     merged = {item["name"]: item for item in load_index(bundled_store)}
-    merged.update({item["name"]: item for item in load_index(runtime_store)})
+    if lifecycle is None:
+        runtime_items = load_index(runtime_store)
+    else:
+        # Pre-lifecycle runtime Skills become candidates instead of silently
+        # bypassing the same governance required for newly distilled Skills.
+        for item in load_index(runtime_store):
+            if lifecycle.status_for("skill", str(item["name"])) is not None:
+                continue
+            skill_file = Path(str(item["path"])) / "SKILL.md"
+            lifecycle.register_skill(
+                str(item["name"]),
+                version=1,
+                scope_key="",
+                content=skill_file.read_text(encoding="utf-8"),
+                content_ref=str(skill_file),
+            )
+        runtime_items = load_index(
+            runtime_store,
+            lifecycle=lifecycle,
+            allowed_statuses=("active",),
+            trusted_unregistered=False,
+        )
+    merged.update({item["name"]: item for item in runtime_items})
     return [merged[name] for name in sorted(merged)]
 
 
@@ -127,6 +151,31 @@ def main() -> None:
     agent_id = f"root-{uuid.uuid4().hex}"
     permission_tree = PermissionTree(cwd, default_permission_atoms())
     permission_tree.attach_agent(permission_tree.ROOT_ID, agent_id)
+    memory_conn = init_db(get_home() / "memory.db")
+    evolution_config = config["evolution"]
+    artifact_manager = EvolutionArtifactManager(
+        memory_conn,
+        token_weights=TokenWeights(
+            uncached_input=float(evolution_config["uncached_input_weight"]),
+            cached_input=float(evolution_config["cached_input_weight"]),
+            output=float(evolution_config["output_weight"]),
+        ),
+        min_canary_trials=int(evolution_config["min_canary_trials"]),
+        negative_streak=int(evolution_config["negative_streak"]),
+    )
+    if bool(evolution_config["gc_on_startup"]):
+        artifact_manager.garbage_collect(
+            candidate_days=int(evolution_config["candidate_retention_days"]),
+            inactive_days=int(evolution_config["inactive_days"]),
+            quarantine_days=int(evolution_config["quarantine_retention_days"]),
+            retired_days=int(evolution_config["retired_retention_days"]),
+            purge_content=True,
+            skill_store=get_home() / "skills_store",
+        )
+    gc_interval_seconds = float(evolution_config["gc_interval_seconds"])
+    if gc_interval_seconds <= 0:
+        raise ValueError("evolution.gc_interval_seconds 必须大于 0")
+    last_gc_at = time.monotonic()
     state = SessionState(
         session_id=uuid.uuid4().hex,
         agent_id=agent_id,
@@ -135,7 +184,7 @@ def main() -> None:
         cwd=str(cwd),
         repo_snapshot=_repo_snapshot(cwd),
         agents_content=_read_agents_once(cwd),
-        skill_index=_load_skill_index(),
+        skill_index=_load_skill_index(artifact_manager),
         skill_strategy=skill_strategy,
         skill_top_k=skill_top_k,
         skill_candidate_k=skill_candidate_k,
@@ -144,7 +193,9 @@ def main() -> None:
         skill_warm_turns=skill_warm_turns,
         skill_idle_seconds=skill_idle_seconds,
         max_steps=int(config["agent"]["max_steps"]),
-        memory_conn=init_db(get_home() / "memory.db"),
+        memory_conn=memory_conn,
+        artifact_manager=artifact_manager,
+        evolution_artifact_statuses=("active",),
     )
     base_url = config["llm"].get("base_url")
     if provider == "deepseek" and not base_url:
@@ -159,17 +210,78 @@ def main() -> None:
     approve = _make_approver(console, prompt)
 
     def handle(text: str) -> None:
+        nonlocal last_gc_at
+        if time.monotonic() - last_gc_at >= gc_interval_seconds:
+            artifact_manager.garbage_collect(
+                candidate_days=int(evolution_config["candidate_retention_days"]),
+                inactive_days=int(evolution_config["inactive_days"]),
+                quarantine_days=int(evolution_config["quarantine_retention_days"]),
+                retired_days=int(evolution_config["retired_retention_days"]),
+                purge_content=True,
+                skill_store=get_home() / "skills_store",
+            )
+            state.skill_index = _load_skill_index(artifact_manager)
+            last_gc_at = time.monotonic()
         if text.strip() == "/learn":
             if not state.last_evolution_eligible:
                 reasons = ", ".join(state.last_evolution_reasons) or "尚无已验证变更"
                 console.print(f"[yellow]本轮轨迹未通过进化门禁：{reasons}[/yellow]")
                 return
-            skill = distill(state.last_evolution_history, client)
+            task_context = next(
+                (
+                    message.content
+                    for message in state.last_evolution_history
+                    if message.role == "user" and message.content.strip()
+                ),
+                "",
+            )
+            skill = distill(
+                state.last_evolution_history,
+                client,
+                task_context=task_context,
+                artifact_manager=artifact_manager,
+                scope_key=state.memory_scope,
+            )
             state.last_evolution_eligible = False
             state.last_evolution_reasons = ("trajectory_already_distilled",)
             state.last_evolution_history = []
-            state.skill_index = _load_skill_index()
-            console.print(f"[green]已蒸馏技能：{skill.frontmatter.name}[/green]")
+            state.skill_index = _load_skill_index(artifact_manager)
+            artifact = artifact_manager.get_by_key(
+                "skill", skill.frontmatter.name, skill.version
+            )
+            console.print(
+                "[green]已蒸馏候选技能："
+                f"{skill.frontmatter.name}（artifact={artifact.artifact_id}, "
+                "status=candidate，需沙盒 A/B 后才会自动加载）[/green]"
+            )
+            return
+        if text.strip() == "/evolution-status":
+            console.print(
+                [
+                    {
+                        "id": item.artifact_id,
+                        "type": item.artifact_type,
+                        "key": item.subject_key,
+                        "version": item.version,
+                        "status": item.status,
+                        "economics": artifact_manager.economics(item.artifact_id),
+                    }
+                    for item in artifact_manager.list_artifacts()
+                ]
+            )
+            return
+        if text.strip() == "/evolution-gc":
+            result = artifact_manager.garbage_collect(
+                candidate_days=int(evolution_config["candidate_retention_days"]),
+                inactive_days=int(evolution_config["inactive_days"]),
+                quarantine_days=int(evolution_config["quarantine_retention_days"]),
+                retired_days=int(evolution_config["retired_retention_days"]),
+                purge_content=True,
+                skill_store=get_home() / "skills_store",
+            )
+            state.skill_index = _load_skill_index(artifact_manager)
+            last_gc_at = time.monotonic()
+            console.print(result)
             return
         if text.strip() == "/skill-status":
             load_state = state.skill_load_state

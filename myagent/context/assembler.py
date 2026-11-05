@@ -61,8 +61,9 @@ def build_messages(
     retrieved: str = "",
     skill_items: list[dict] | None = None,
     skill_body: str = "",
+    turn_messages: list[Message] | None = None,
 ) -> list[Message]:
-    """Return stable system, chronological history, then an ephemeral sidecar."""
+    """Return stable history, a transient turn prefix, then a new sidecar."""
     context_parts = ["## 仓库快照", state.repo_snapshot or "(空)"]
     if state.agents_content:
         context_parts.extend(["## AGENTS.md", state.agents_content])
@@ -70,10 +71,12 @@ def build_messages(
     if system_skill_block:
         context_parts.extend([system_skill_block])
     system_content = stable.STABLE_PREFIX + "\n\n" + "\n".join(context_parts)
+    active_turn = turn_messages or []
+    base = [Message(role="system", content=system_content), *state.history, *active_turn]
 
     selected_skills = state.skill_index if skill_items is None else skill_items
     if not user_input and not retrieved and not selected_skills and not skill_body:
-        return [Message(role="system", content=system_content), *state.history]
+        return base
 
     sidecar_parts = ["## 当前轮 Sidecar"]
     if retrieved:
@@ -91,5 +94,5 @@ def build_messages(
     if user_input:
         sidecar_parts.extend(["## 用户输入", user_input])
     current = Message(role="user", content="\n".join(sidecar_parts))
-    return [Message(role="system", content=system_content), *state.history, current]
+    return [*base, current]
 

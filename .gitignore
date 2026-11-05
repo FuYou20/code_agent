@@ -28,3 +28,8 @@ audit.log
 .vscode/
 .DS_Store
 Thumbs.db
+
+# Generated benchmark runs, temporary task workspaces, and local previews.
+# Canonical result files already tracked by Git remain versioned.
+/output/*
+/intro/

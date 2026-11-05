@@ -13,7 +13,7 @@ from ..context.assembler import build_messages
 from ..context.compressor import compress_if_needed
 from ..evolution import ToolObservation, evaluate_turn, record_experience
 from ..llm.types import Message, ToolCall
-from ..memory.retrieve import retrieve as retrieve_memory
+from ..memory.retrieve import mark_recalled, render_hits, retrieve_hits
 from ..permissions import advertised_tools, check_and_execute
 from ..skills.manager import load_skill
 from ..skills.retriever import SkillMatch, retrieve_relevant
@@ -73,6 +73,19 @@ def _activate_primary_skill(
             "note": "skill requirements do not grant or narrow authority",
         }
     )
+    state.last_activated_skill_name = skill.frontmatter.name
+    state.last_activated_skill_version = int(item.get("version", skill.version))
+    artifact_id = item.get("artifact_id") if item is not None else None
+    if state.artifact_manager is not None and artifact_id is not None:
+        state.artifact_manager.record_exposure(
+            int(artifact_id),
+            run_id=(
+                f"{state.session_id}:skill:{len(state.history)}:"
+                f"{skill.frontmatter.name}"
+            ),
+            variant="treatment",
+            activated=True,
+        )
     return skill.body
 
 
@@ -298,84 +311,137 @@ def run_turn(
     max_steps = state.max_steps
     state.compression_client = client
     original_input = user_input
-    turn_history: list[Message] = []
+    state.last_activated_skill_name = ""
+    state.last_activated_skill_version = None
+    # The complete Sidecar lives only in this transient per-turn prefix.  It is
+    # sent once, reused as an earlier (cacheable) message during tool steps, and
+    # never committed to durable conversation history.
+    transient_turn: list[Message] = []
+    durable_turn: list[Message] = []
     recorded_input = False
-    retrieved = (
-        retrieve_memory(state.memory_conn, original_input)
-        if state.memory_conn is not None and original_input.strip()
-        else ""
-    )
     skill_items, skill_body = _prepare_skill_turn(
         state,
         original_input,
         client,
     )
+    # Reuse exactly one durable channel per turn.  A high-confidence L1 Skill
+    # already contains the generalized procedure, so adding historical answers
+    # would duplicate dynamic Sidecar text.  Without an activated Skill, recall
+    # at most one concrete experience and suppress unrelated L0 rows.
+    state.last_recalled_memory_ids = ()
+    state.last_recalled_memory_scope = ""
+    state.last_recorded_memory_id = None
+    memory_hits = (
+        retrieve_hits(
+            state.memory_conn,
+            original_input,
+            k=1,
+            scope_key=state.memory_scope,
+            artifact_statuses=state.evolution_artifact_statuses,
+        )
+        if not skill_body and state.memory_conn is not None and original_input.strip()
+        else []
+    )
+    retrieved = render_hits(memory_hits)
+    if memory_hits and state.memory_conn is not None:
+        state.last_recalled_memory_ids = tuple(hit.decision_id for hit in memory_hits)
+        state.last_recalled_memory_scope = memory_hits[0].scope_key
+        mark_recalled(state.memory_conn, state.last_recalled_memory_ids)
+        if state.artifact_manager is not None:
+            for hit in memory_hits:
+                state.artifact_manager.record_exposure(
+                    hit.artifact_id,
+                    run_id=(
+                        f"{state.session_id}:memory:{len(state.history)}:"
+                        f"{hit.decision_id}"
+                    ),
+                    variant="treatment",
+                    activated=True,
+                )
+    if retrieved:
+        skill_items = []
     observations: list[ToolObservation] = []
 
-    for _ in range(max_steps):
-        state.step_count += 1
-        compress_if_needed(state)
-        messages = build_messages(
-            state,
-            user_input,
-            retrieved,
-            skill_items=skill_items,
-            skill_body=skill_body,
-        )
-        response = client.chat(
-            messages,
-            tools=registry.schemas(advertised_tools(state.permission_tree, state.agent_id)),
-        )
-
-        if not recorded_input:
-            user_message = Message(role="user", content=original_input)
-            state.history.append(user_message)
-            turn_history.append(user_message)
-            recorded_input = True
-
-        assistant = Message(
-            role="assistant",
-            content=response.content or "",
-            tool_calls=response.tool_calls or None,
-            reasoning_content=response.reasoning_content,
-        )
-        state.history.append(assistant)
-        turn_history.append(assistant)
-
-        if not response.tool_calls:
-            decision = evaluate_turn(response.content or "", observations)
-            state.last_evolution_eligible = decision.eligible
-            state.last_evolution_reasons = decision.reasons
-            state.last_evolution_history = list(turn_history) if decision.eligible else []
-            record_experience(
-                state.memory_conn,
-                state.session_id,
-                response.content or "",
-                observations,
-                decision,
+    try:
+        for _ in range(max_steps):
+            state.step_count += 1
+            compress_if_needed(state)
+            messages = build_messages(
+                state,
+                user_input,
+                retrieved,
+                skill_items=skill_items,
+                skill_body=skill_body,
+                turn_messages=transient_turn,
             )
-            return response.content or ""
-
-        for call in response.tool_calls:
-            result = check_and_execute(
-                call,
-                state.permission_tree,
-                state.agent_id,
-                state.permission_adapter,
-                approve_fn,
+            response = client.chat(
+                messages,
+                tools=registry.schemas(advertised_tools(state.permission_tree, state.agent_id)),
             )
-            observations.append(ToolObservation(call, result))
-            tool_message = Message(
-                role="tool",
-                content=json.dumps(result, ensure_ascii=False, sort_keys=True),
-                tool_call_id=call.id,
-            )
-            state.history.append(tool_message)
-            turn_history.append(tool_message)
-        user_input = ""
 
-    state.last_evolution_eligible = False
-    state.last_evolution_reasons = ("step_limit_reached",)
-    state.last_evolution_history = []
-    return "达到步数上限"
+            if not recorded_input:
+                # The actual Sidecar is retained only while this turn executes;
+                # the durable history keeps the original user text instead.
+                transient_turn.append(messages[-1])
+                durable_turn.append(Message(role="user", content=original_input))
+                recorded_input = True
+
+            assistant = Message(
+                role="assistant",
+                content=response.content or "",
+                tool_calls=response.tool_calls or None,
+                reasoning_content=response.reasoning_content,
+            )
+            transient_turn.append(assistant)
+            durable_turn.append(assistant)
+
+            if not response.tool_calls:
+                decision = evaluate_turn(response.content or "", observations)
+                state.last_evolution_eligible = decision.eligible
+                state.last_evolution_reasons = decision.reasons
+                state.last_evolution_history = (
+                    list(durable_turn) if decision.eligible else []
+                )
+                state.last_recorded_memory_id = record_experience(
+                    state.memory_conn,
+                    state.session_id,
+                    original_input,
+                    response.content or "",
+                    observations,
+                    decision,
+                    state.memory_scope,
+                )
+                return response.content or ""
+
+            for call in response.tool_calls:
+                result = check_and_execute(
+                    call,
+                    state.permission_tree,
+                    state.agent_id,
+                    state.permission_adapter,
+                    approve_fn,
+                )
+                observations.append(ToolObservation(call, result))
+                tool_message = Message(
+                    role="tool",
+                    content=json.dumps(result, ensure_ascii=False, sort_keys=True),
+                    tool_call_id=call.id,
+                )
+                transient_turn.append(tool_message)
+                durable_turn.append(tool_message)
+
+            # The initial Sidecar already lives in transient_turn.  Reusing that
+            # exact prefix avoids appending the same dynamic memory after every
+            # tool result.
+            user_input = ""
+            retrieved = ""
+            skill_items = []
+            skill_body = ""
+
+        state.last_evolution_eligible = False
+        state.last_evolution_reasons = ("step_limit_reached",)
+        state.last_evolution_history = []
+        return "达到步数上限"
+    finally:
+        state.history.extend(durable_turn)
 

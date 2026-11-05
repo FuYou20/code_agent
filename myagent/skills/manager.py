@@ -28,11 +28,23 @@ def _parse_skill(skill_file: Path) -> Skill:
     return Skill(
         frontmatter=frontmatter,
         body=parts[2].lstrip("\r\n"),
-        path=str(skill_file.parent.resolve()),
+        path=str(
+            (
+                skill_file.parent.resolve()
+                if skill_file.name == "SKILL.md"
+                else skill_file.resolve()
+            )
+        ),
     )
 
 
-def load_index(store: Path) -> list[dict]:
+def load_index(
+    store: Path,
+    *,
+    lifecycle=None,
+    allowed_statuses: tuple[str, ...] = ("active",),
+    trusted_unregistered: bool = True,
+) -> list[dict]:
     """Scan ``store/*/SKILL.md`` and return a stable L0 metadata index."""
     if not store.is_dir():
         return []
@@ -42,15 +54,43 @@ def load_index(store: Path) -> list[dict]:
             skill = _parse_skill(skill_file)
         except (OSError, ValueError, yaml.YAMLError, ValidationError):
             continue
-        index.append(
-            {
-                "name": skill.frontmatter.name,
-                "description": skill.frontmatter.description,
-                "scene": skill.frontmatter.scene,
-                "triggers": list(skill.frontmatter.triggers),
-                "path": skill.path,
-            }
-        )
+        lifecycle_record = None
+        if lifecycle is not None:
+            latest_record = None
+            try:
+                latest_record = lifecycle.get_by_key("skill", skill.frontmatter.name)
+            except KeyError:
+                if not trusted_unregistered:
+                    continue
+            if latest_record is not None:
+                lifecycle_record = lifecycle.latest_allowed(
+                    "skill",
+                    skill.frontmatter.name,
+                    allowed_statuses,
+                )
+                if lifecycle_record is None:
+                    continue
+                governed_file = Path(lifecycle_record.content_ref)
+                try:
+                    skill = _parse_skill(governed_file)
+                except (OSError, ValueError, yaml.YAMLError, ValidationError):
+                    continue
+        item = {
+            "name": skill.frontmatter.name,
+            "description": skill.frontmatter.description,
+            "scene": skill.frontmatter.scene,
+            "triggers": list(skill.frontmatter.triggers),
+            "path": skill.path,
+        }
+        if lifecycle_record is not None:
+            item.update(
+                {
+                    "artifact_id": lifecycle_record.artifact_id,
+                    "lifecycle_status": lifecycle_record.status,
+                    "version": lifecycle_record.version,
+                }
+            )
+        index.append(item)
     return index
 
 

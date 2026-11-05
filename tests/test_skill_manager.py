@@ -6,6 +6,8 @@ from myagent.agent.state import SessionState
 from myagent.cli import _load_skill_index
 from myagent.context import stable
 from myagent.context.assembler import build_messages
+from myagent.evolution.artifacts import EvolutionArtifactManager, TokenUsage
+from myagent.memory.store import init_db
 from myagent.skills.manager import find_relevant, load_body, load_index
 
 
@@ -115,3 +117,41 @@ def test_cli_startup_loads_three_bundled_skills(monkeypatch, tmp_path) -> None:
         "read-repo",
         "run-tests",
     ]
+
+
+def test_cli_registers_legacy_runtime_skill_as_candidate_not_production(
+    monkeypatch, tmp_path
+) -> None:
+    home = tmp_path / "home"
+    monkeypatch.setenv("MYAGENT_HOME", str(home))
+    _write_skill(
+        home / "skills_store",
+        "legacy",
+        """---
+name: legacy-runtime
+description: Legacy runtime skill
+triggers: [legacy]
+permission_requirements: []
+---
+Legacy procedure.
+""",
+    )
+    conn = init_db(home / "memory.db")
+    manager = EvolutionArtifactManager(conn, min_canary_trials=1)
+
+    initial = _load_skill_index(manager)
+    assert "legacy-runtime" not in {item["name"] for item in initial}
+    artifact = manager.get_by_key("skill", "legacy-runtime")
+    assert artifact.status == "candidate"
+
+    manager.record_ab_trial(
+        artifact.artifact_id,
+        trial_key="legacy-check",
+        control_correct=True,
+        treatment_correct=True,
+        control_usage=TokenUsage(prompt_tokens=1000),
+        treatment_usage=TokenUsage(prompt_tokens=500),
+    )
+    promoted = _load_skill_index(manager)
+    assert "legacy-runtime" in {item["name"] for item in promoted}
+    conn.close()

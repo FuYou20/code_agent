@@ -6,6 +6,8 @@ import json
 import sqlite3
 from pathlib import Path
 
+from ..evolution.artifacts import EvolutionArtifactManager, initialize_artifact_schema
+
 
 def init_db(path: Path) -> sqlite3.Connection:
     """Open a decision database and initialize its table, FTS index, and triggers."""
@@ -31,6 +33,27 @@ def init_db(path: Path) -> sqlite3.Connection:
             content_rowid='id'
         );
 
+        CREATE TABLE IF NOT EXISTS memory_stats (
+            decision_id INTEGER PRIMARY KEY,
+            status TEXT NOT NULL DEFAULT 'provisional'
+                CHECK(status IN (
+                    'provisional',
+                    'boundary-verified',
+                    'verified',
+                    'conflicted',
+                    'quarantined'
+                )),
+            scope_key TEXT NOT NULL DEFAULT '',
+            success_count INTEGER NOT NULL DEFAULT 0,
+            failure_count INTEGER NOT NULL DEFAULT 0,
+            recall_count INTEGER NOT NULL DEFAULT 0,
+            recent_recall_count INTEGER NOT NULL DEFAULT 0,
+            last_recalled_at TEXT,
+            last_verified_at TEXT,
+            last_feedback_at TEXT,
+            FOREIGN KEY(decision_id) REFERENCES decisions(id) ON DELETE CASCADE
+        );
+
         CREATE TRIGGER IF NOT EXISTS decisions_ai AFTER INSERT ON decisions BEGIN
             INSERT INTO decisions_fts(rowid, content, files)
             VALUES (new.id, new.content, new.files);
@@ -47,8 +70,12 @@ def init_db(path: Path) -> sqlite3.Connection:
             INSERT INTO decisions_fts(rowid, content, files)
             VALUES (new.id, new.content, new.files);
         END;
+
+        INSERT OR IGNORE INTO memory_stats(decision_id)
+        SELECT id FROM decisions;
         """
     )
+    initialize_artifact_schema(conn)
     conn.commit()
     return conn
 
@@ -60,9 +87,10 @@ def insert_decision(
     content,
     files: list[str],
     outcome: str,
-) -> None:
+    scope_key: str = "",
+) -> int:
     """Insert one decision and let the trigger update the FTS5 index."""
-    conn.execute(
+    cursor = conn.execute(
         """
         INSERT INTO decisions(session_id, kind, content, files, outcome)
         VALUES (?, ?, ?, ?, ?)
@@ -75,5 +103,20 @@ def insert_decision(
             str(outcome),
         ),
     )
+    decision_id = int(cursor.lastrowid)
+    conn.execute(
+        """
+        INSERT OR IGNORE INTO memory_stats(decision_id, scope_key)
+        VALUES (?, ?)
+        """,
+        (decision_id, str(scope_key)),
+    )
+    if str(outcome) == "success":
+        EvolutionArtifactManager(conn, initialize_schema=False).register_memory(
+            decision_id,
+            scope_key=str(scope_key),
+            content=str(content),
+        )
     conn.commit()
+    return decision_id
 

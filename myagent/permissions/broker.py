@@ -9,6 +9,7 @@ from ..audit.log import log
 from ..llm.types import ToolCall
 from ..tools.registry import execute, lookup
 from .model import PermissionAtom
+from .telemetry import atom_payload, emit_permission_event
 from .tree import PermissionTree
 
 
@@ -57,7 +58,13 @@ class ToolPermissionAdapter:
 
 def advertised_tools(tree: PermissionTree, agent_id: str) -> set[str]:
     """Return only tool names present in the agent's bound permission node."""
-    return {atom.tool for atom in tree.policy_for_agent(agent_id)}
+    tools = {atom.tool for atom in tree.policy_for_agent(agent_id)}
+    emit_permission_event(
+        "tool.visibility.filtered",
+        agent_id=agent_id,
+        visible_tools=sorted(tools),
+    )
+    return tools
 
 
 def _audit(call: ToolCall, result: dict) -> None:
@@ -81,10 +88,23 @@ def check_and_execute(
     approve_fn: Callable[[ToolCall], bool],
 ) -> dict:
     """Authorize one complete atom, request approval, execute, and audit."""
+    emit_permission_event(
+        "tool.call.received",
+        agent_id=agent_id,
+        call_id=call.id,
+        tool=call.name,
+        argument_names=sorted(call.arguments),
+    )
     try:
         lookup(call.name)
     except KeyError:
         result = {"error": "unknown_tool", "tool": call.name}
+        emit_permission_event(
+            "tool.call.denied",
+            agent_id=agent_id,
+            tool=call.name,
+            reason="unknown_tool",
+        )
         _audit(call, result)
         return result
 
@@ -96,8 +116,21 @@ def check_and_execute(
             "tool": call.name,
             "message": str(exc),
         }
+        emit_permission_event(
+            "tool.request_atom.rejected",
+            agent_id=agent_id,
+            tool=call.name,
+            reason="invalid_arguments_or_path",
+            error_type=type(exc).__name__,
+        )
         _audit(call, result)
         return result
+    emit_permission_event(
+        "tool.request_atom.built",
+        agent_id=agent_id,
+        call_id=call.id,
+        requested_atom=atom_payload(requested),
+    )
 
     if not tree.allows(agent_id, requested):
         result = {
@@ -105,15 +138,51 @@ def check_and_execute(
             "tool": call.name,
             "message": "当前 Agent 的原子权限节点不允许该工具与文件访问组合",
         }
+        emit_permission_event(
+            "tool.call.denied",
+            agent_id=agent_id,
+            tool=call.name,
+            reason="permission_denied",
+        )
         _audit(call, result)
         return result
 
     tool = lookup(call.name)
-    if tool.risk == "high" and not approve_fn(call):
+    approval_required = tool.risk == "high"
+    approved = not approval_required or approve_fn(call)
+    emit_permission_event(
+        "tool.approval.checked",
+        agent_id=agent_id,
+        tool=call.name,
+        risk=tool.risk,
+        required=approval_required,
+        approved=approved,
+    )
+    if not approved:
         result = {"error": "user_denied", "tool": call.name}
+        emit_permission_event(
+            "tool.call.denied",
+            agent_id=agent_id,
+            tool=call.name,
+            reason="user_denied",
+        )
         _audit(call, result)
         return result
 
+    emit_permission_event(
+        "tool.execution.started",
+        agent_id=agent_id,
+        call_id=call.id,
+        tool=call.name,
+    )
     result = execute(call.name, call.arguments)
+    emit_permission_event(
+        "tool.execution.finished",
+        agent_id=agent_id,
+        call_id=call.id,
+        tool=call.name,
+        succeeded="error" not in result,
+        error=str(result.get("error", "")),
+    )
     _audit(call, result)
     return result

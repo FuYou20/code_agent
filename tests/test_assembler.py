@@ -62,6 +62,24 @@ def test_empty_followup_uses_history_without_new_sidecar(tmp_path) -> None:
     assert messages == [messages[0], prior]
 
 
+def test_turn_messages_reuse_existing_sidecar_without_creating_another(tmp_path) -> None:
+    stable.STABLE_PREFIX = "stable"
+    state = SessionState(session_id="s1", cwd=str(tmp_path))
+    sidecar = Message(role="user", content="remembered once")
+    tool_result = Message(role="tool", content="done", tool_call_id="call-1")
+
+    messages = build_messages(
+        state,
+        "",
+        retrieved="",
+        skill_items=[],
+        turn_messages=[sidecar, tool_result],
+    )
+
+    assert messages == [messages[0], sidecar, tool_result]
+    assert sum("remembered once" in message.content for message in messages) == 1
+
+
 def test_frozen_l0_moves_to_session_system_while_l1_stays_in_sidecar(tmp_path) -> None:
     stable.STABLE_PREFIX = "stable"
     state = SessionState(

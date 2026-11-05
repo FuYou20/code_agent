@@ -38,4 +38,12 @@ class SessionState:
     max_steps: int = 30
     compression_client: object | None = field(default=None, repr=False)
     memory_conn: sqlite3.Connection | None = field(default=None, repr=False)
+    memory_scope: str = ""
+    last_recalled_memory_ids: tuple[int, ...] = ()
+    last_recalled_memory_scope: str = ""
+    last_recorded_memory_id: int | None = None
+    last_activated_skill_name: str = ""
+    last_activated_skill_version: int | None = None
+    artifact_manager: object | None = field(default=None, repr=False)
+    evolution_artifact_statuses: tuple[str, ...] = ("active",)
 

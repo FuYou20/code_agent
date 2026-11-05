@@ -26,6 +26,19 @@ DEFAULT_CONFIG = {
         "warm_turns": 3,
         "idle_seconds": 21600,
     },
+    "evolution": {
+        "min_canary_trials": 5,
+        "negative_streak": 2,
+        "uncached_input_weight": 1.0,
+        "cached_input_weight": 1.0,
+        "output_weight": 1.0,
+        "candidate_retention_days": 30,
+        "inactive_days": 90,
+        "quarantine_retention_days": 30,
+        "retired_retention_days": 30,
+        "gc_on_startup": True,
+        "gc_interval_seconds": 86400,
+    },
     "tools": {
         "terminal_whitelist": [
             "^git (status|diff|log)",

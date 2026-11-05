@@ -25,6 +25,9 @@ DISTILL_PROMPT = """你是一个技能提炼器。下面是完成一个 coding �
 - 步骤要具体到工具名和参数模式
 - 不要编造轨迹中没出现的工具
 
+任务语义：
+{task_context}
+
 轨迹：
 {trajectory}
 """
@@ -33,10 +36,23 @@ DISTILL_PROMPT = """你是一个技能提炼器。下面是完成一个 coding �
 def _filtered_trajectory(history: list[Message]) -> tuple[str, set[str]]:
     rows: list[str] = []
     used_tools: set[str] = set()
+    successful_call_ids: set[str] = set()
+    for message in history:
+        if message.role != "tool" or not message.tool_call_id:
+            continue
+        try:
+            result = json.loads(message.content)
+        except (json.JSONDecodeError, TypeError):
+            continue
+        if isinstance(result, dict) and "error" not in result:
+            successful_call_ids.add(message.tool_call_id)
+
     for message in history:
         if message.role == "assistant" and message.tool_calls:
             calls = []
             for call in message.tool_calls:
+                if call.id not in successful_call_ids:
+                    continue
                 used_tools.add(call.name)
                 calls.append(
                     {
@@ -45,15 +61,16 @@ def _filtered_trajectory(history: list[Message]) -> tuple[str, set[str]]:
                         "arguments": call.arguments,
                     }
                 )
-            rows.append(
-                json.dumps(
-                    {"role": "assistant", "tool_calls": calls},
-                    ensure_ascii=False,
-                    sort_keys=True,
-                    separators=(",", ":"),
+            if calls:
+                rows.append(
+                    json.dumps(
+                        {"role": "assistant", "tool_calls": calls},
+                        ensure_ascii=False,
+                        sort_keys=True,
+                        separators=(",", ":"),
+                    )
                 )
-            )
-        elif message.role == "tool":
+        elif message.role == "tool" and message.tool_call_id in successful_call_ids:
             rows.append(
                 json.dumps(
                     {
@@ -106,9 +123,9 @@ def _render(frontmatter: SkillFrontmatter, body: str) -> str:
     return f"---\n{dumped}\n---\n\n{body.rstrip()}\n"
 
 
-def _archive_existing(skill_file: Path) -> int:
+def _archive_existing(skill_file: Path) -> tuple[int, Path | None]:
     if not skill_file.exists():
-        return 1
+        return 1, None
     history_dir = skill_file.parent / ".history"
     history_dir.mkdir(parents=True, exist_ok=True)
     versions: list[int] = []
@@ -117,15 +134,31 @@ def _archive_existing(skill_file: Path) -> int:
         if match:
             versions.append(int(match.group(1)))
     archived_version = max(versions, default=0) + 1
-    skill_file.replace(history_dir / f"v{archived_version}.md")
-    return archived_version + 1
+    archived_path = history_dir / f"v{archived_version}.md"
+    skill_file.replace(archived_path)
+    return archived_version + 1, archived_path
 
 
-def distill(history: list[Message], client) -> Skill:
+def distill(
+    history: list[Message],
+    client,
+    *,
+    task_context: str = "",
+    artifact_manager=None,
+    scope_key: str = "",
+) -> Skill:
     """Create a versioned skill whose tools are limited to the real trajectory."""
     trajectory, used_tools = _filtered_trajectory(history)
     response = client.chat(
-        [Message(role="user", content=DISTILL_PROMPT.format(trajectory=trajectory))],
+        [
+            Message(
+                role="user",
+                content=DISTILL_PROMPT.format(
+                    task_context=task_context.strip()[:4000] or "(未提供)",
+                    trajectory=trajectory,
+                ),
+            )
+        ],
         tools=[],
     )
     if not response.content:
@@ -153,12 +186,37 @@ def distill(history: list[Message], client) -> Skill:
     skill_dir = (get_home() / "skills_store" / safe_name).resolve()
     skill_dir.mkdir(parents=True, exist_ok=True)
     skill_file = skill_dir / "SKILL.md"
-    version = _archive_existing(skill_file)
-    skill_file.write_text(_render(frontmatter, body), encoding="utf-8")
-    return Skill(
+    version, archived_path = _archive_existing(skill_file)
+    if artifact_manager is not None and archived_path is not None:
+        try:
+            previous = artifact_manager.get_by_key(
+                "skill", frontmatter.name, version - 1
+            )
+        except KeyError:
+            previous = None
+        if previous is not None:
+            artifact_manager.update_content_ref(
+                previous.artifact_id,
+                str(archived_path),
+            )
+    rendered = _render(frontmatter, body)
+    skill_file.write_text(rendered, encoding="utf-8")
+    skill = Skill(
         frontmatter=frontmatter,
         body=body,
         path=str(skill_dir),
         version=version,
     )
+    if artifact_manager is not None:
+        from ..evolution.artifacts import TokenUsage
+
+        artifact_manager.register_skill(
+            skill.frontmatter.name,
+            version=skill.version,
+            scope_key=scope_key,
+            content=rendered,
+            content_ref=str(skill_file),
+            creation_usage=TokenUsage.from_mapping(response.usage),
+        )
+    return skill
 

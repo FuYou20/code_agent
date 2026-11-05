@@ -6,6 +6,8 @@ import pytest
 import yaml
 
 from myagent.llm.types import LLMResponse, Message, ToolCall
+from myagent.evolution.artifacts import EvolutionArtifactManager, TokenUsage
+from myagent.memory.store import init_db
 from myagent.skills.distiller import distill
 from myagent.skills.manager import load_index
 
@@ -87,6 +89,21 @@ def test_distill_filters_chatter_and_removes_invented_tools(monkeypatch, tmp_pat
     assert [item["name"] for item in restarted_index] == ["learned-reader"]
 
 
+def test_distill_uses_explicit_task_context_without_granting_tools(
+    monkeypatch, tmp_path
+) -> None:
+    monkeypatch.setenv("MYAGENT_HOME", str(tmp_path / "home"))
+    client = FakeDistillClient([_generated("Use file_read.")])
+    distill(
+        _history(),
+        client,
+        task_context="Repair an idempotent command with a transactional outbox.",
+    )
+    prompt = client.requests[0][0][0].content
+    assert "idempotent command" in prompt
+    assert "PRIVATE CHATTER" not in prompt
+
+
 def test_distill_archives_previous_versions(monkeypatch, tmp_path) -> None:
     monkeypatch.setenv("MYAGENT_HOME", str(tmp_path / "home"))
     client = FakeDistillClient(
@@ -122,4 +139,43 @@ def test_distill_sanitizes_generated_skill_name(monkeypatch, tmp_path) -> None:
     skill = distill(_history(), FakeDistillClient([output]))
     assert skill.frontmatter.name == "reader"
     assert Path(skill.path).parent == (tmp_path / "home" / "skills_store").resolve()
+
+
+def test_new_candidate_version_does_not_replace_active_skill(
+    monkeypatch, tmp_path
+) -> None:
+    home = tmp_path / "home"
+    monkeypatch.setenv("MYAGENT_HOME", str(home))
+    conn = init_db(home / "memory.db")
+    manager = EvolutionArtifactManager(conn, min_canary_trials=1)
+    client = FakeDistillClient(
+        [_generated("First active procedure."), _generated("Second candidate procedure.")]
+    )
+
+    first = distill(_history(), client, artifact_manager=manager)
+    first_artifact = manager.get_by_key("skill", first.frontmatter.name, first.version)
+    manager.record_ab_trial(
+        first_artifact.artifact_id,
+        trial_key="promote-v1",
+        control_correct=True,
+        treatment_correct=True,
+        control_usage=TokenUsage(prompt_tokens=1000),
+        treatment_usage=TokenUsage(prompt_tokens=500),
+    )
+    second = distill(_history(), client, artifact_manager=manager)
+
+    assert second.version == 2
+    assert manager.get_by_key("skill", second.frontmatter.name, 2).status == "candidate"
+    active_index = load_index(
+        home / "skills_store",
+        lifecycle=manager,
+        allowed_statuses=("active",),
+        trusted_unregistered=False,
+    )
+    assert active_index[0]["version"] == 1
+    assert "v1.md" in active_index[0]["path"]
+    assert "First active procedure." in Path(active_index[0]["path"]).read_text(
+        encoding="utf-8"
+    )
+    conn.close()
 

@@ -1,0 +1,50 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>MyAgent · 在线 TUI</title>
+  <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' fill='%2311130f'/%3E%3Ctext x='16' y='21' text-anchor='middle' font-family='monospace' font-size='15' fill='%23d8ff43'%3EM%3C/text%3E%3C/svg%3E">
+  <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/xterm@5.3.0/css/xterm.min.css">
+  <link rel="stylesheet" href="/assets/terminal.css">
+</head>
+<body>
+  <header>
+    <a href="/" class="back">← 返回设计页</a>
+    <div class="title"><span>M</span><b>MyAgent 在线 TUI</b></div>
+    <div class="state" id="state"><i></i> 连接中</div>
+  </header>
+  <main>
+    <section class="notice">
+      <div>
+        <b>公共只读沙盒</b>
+        <span>可分析示例仓库、查看文件和 Git 状态；不开放写入、执行命令与持久化记忆。</span>
+      </div>
+      <button id="examples" type="button">示例问题</button>
+    </section>
+    <section class="terminal-shell">
+      <div id="terminal" aria-label="MyAgent 终端"></div>
+      <div class="expired" id="expired" hidden>
+        <h1>会话已结束</h1>
+        <p>一次性工作区已清理，你可以重新启动一个独立会话。</p>
+        <button type="button" onclick="location.reload()">重新连接</button>
+      </div>
+    </section>
+    <p class="hint">鼠标滚轮 / 触控板上下滑动查看历史，<kbd>Ctrl</kbd> + <kbd>C</kbd> 可中断当前请求。</p>
+  </main>
+
+  <dialog id="example-dialog">
+    <form method="dialog">
+      <div class="dialog-head"><b>可以这样体验</b><button aria-label="关闭">×</button></div>
+      <button class="example" value="cancel" data-prompt="先阅读 README 和 src/order_service.py，分析这个示例项目可能存在的问题，但不要修改文件。">分析示例仓库</button>
+      <button class="example" value="cancel" data-prompt="查看当前 Git 状态和最近提交，并说明这个仓库的结构。">查看 Git 信息</button>
+      <button class="example" value="cancel" data-prompt="解释当前 Skill 工作集、Sidecar 和 Token 面板分别表示什么。">解释运行面板</button>
+    </form>
+  </dialog>
+
+  <script src="/assets/config.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/xterm@5.3.0/lib/xterm.min.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/xterm-addon-fit@0.8.0/lib/xterm-addon-fit.min.js"></script>
+  <script src="/assets/terminal.js"></script>
+</body>
+</html>

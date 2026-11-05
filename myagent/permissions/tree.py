@@ -11,6 +11,7 @@ from threading import RLock
 import uuid
 
 from .model import FileGrant, PermissionAtom
+from .telemetry import atom_payload, emit_permission_event
 
 
 class PermissionEscalationDenied(Exception):
@@ -104,6 +105,12 @@ class PermissionTree:
         self._nodes: dict[str, _PermissionNode] = {self.ROOT_ID: root}
         self._agent_nodes: dict[str, str] = {}
         self._lock = RLock()
+        emit_permission_event(
+            "permission.tree.initialized",
+            root_id=self.ROOT_ID,
+            atom_count=len(atoms),
+            policy_hash=root.policy_hash,
+        )
 
     def _resolve_root(self, logical_root: str) -> Path:
         relative = Path(*logical_root.split("/")) if logical_root != "." else Path()
@@ -204,26 +211,64 @@ class PermissionTree:
         """Reuse an equal policy node or create a strictly attenuated child."""
         atoms = _canonical_atoms(requested_atoms)
         self._validate_atoms(atoms)
+        emit_permission_event(
+            "permission.child.requested",
+            parent_node_id=parent_id,
+            requested_atoms=[atom_payload(atom) for atom in atoms],
+        )
         with self._lock:
             parent = self._active_node(parent_id)
-            uncovered = [
-                atom
-                for atom in atoms
-                if not any(self.atom_covers(parent_atom, atom) for parent_atom in parent.atoms)
-            ]
+            emit_permission_event(
+                "permission.node.loaded",
+                node_id=parent.node_id,
+                state=parent.state,
+                atom_count=len(parent.atoms),
+                policy_hash=parent.policy_hash,
+            )
+            uncovered = []
+            for atom in atoms:
+                covering = [
+                    parent_atom
+                    for parent_atom in parent.atoms
+                    if self.atom_covers(parent_atom, atom)
+                ]
+                emit_permission_event(
+                    "permission.atom.coverage_checked",
+                    operation="delegate",
+                    requested_atom=atom_payload(atom),
+                    covering_atom_count=len(covering),
+                    covered=bool(covering),
+                )
+                if not covering:
+                    uncovered.append(atom)
             if uncovered:
+                emit_permission_event(
+                    "permission.child.denied",
+                    parent_node_id=parent_id,
+                    uncovered_atoms=[atom_payload(atom) for atom in uncovered],
+                )
                 names = ", ".join(atom.tool for atom in uncovered)
                 raise PermissionEscalationDenied(
                     f"requested atoms are not covered by parent {parent_id}: {names}"
                 )
 
             if atoms == parent.atoms:
+                emit_permission_event(
+                    "permission.node.reused",
+                    node_id=parent.node_id,
+                    reuse_kind="parent",
+                )
                 return parent.node_id
 
             digest = _policy_hash(atoms)
             for child_id in parent.child_nodes:
                 child = self._nodes[child_id]
                 if child.state == "active" and child.policy_hash == digest and child.atoms == atoms:
+                    emit_permission_event(
+                        "permission.node.reused",
+                        node_id=child.node_id,
+                        reuse_kind="sibling-policy",
+                    )
                     return child.node_id
 
             node_id = f"perm-{uuid.uuid4().hex}"
@@ -235,6 +280,13 @@ class PermissionTree:
             )
             self._nodes[node_id] = child
             parent.child_nodes.add(node_id)
+            emit_permission_event(
+                "permission.node.created",
+                node_id=node_id,
+                parent_node_id=parent.node_id,
+                atom_count=len(atoms),
+                policy_hash=digest,
+            )
             return node_id
 
     def attach_agent(self, node_id: str, agent_id: str) -> None:
@@ -245,11 +297,23 @@ class PermissionTree:
             node = self._active_node(node_id)
             current = self._agent_nodes.get(agent_id)
             if current is not None and current != node_id:
+                emit_permission_event(
+                    "permission.agent.attach_denied",
+                    agent_id=agent_id,
+                    requested_node_id=node_id,
+                    current_node_id=current,
+                )
                 raise AgentAlreadyAttached(
                     f"agent {agent_id!r} is already attached to {current}"
                 )
             node.attached_agents.add(agent_id)
             self._agent_nodes[agent_id] = node_id
+            emit_permission_event(
+                "permission.agent.attached",
+                agent_id=agent_id,
+                node_id=node_id,
+                attached_agent_count=len(node.attached_agents),
+            )
 
     def policy_for_agent(self, agent_id: str) -> tuple[PermissionAtom, ...]:
         """Return only the bound node's atoms, never ancestors or siblings."""
@@ -264,14 +328,76 @@ class PermissionTree:
         with self._lock:
             node_id = self._agent_nodes.get(agent_id)
             if node_id is None:
+                emit_permission_event(
+                    "permission.agent.node_lookup",
+                    agent_id=agent_id,
+                    found=False,
+                )
+                emit_permission_event(
+                    "permission.authorization.decided",
+                    agent_id=agent_id,
+                    requested_atom=atom_payload(requested_atom),
+                    allowed=False,
+                    reason="agent_not_bound",
+                )
                 return False
             node = self._nodes.get(node_id)
             if node is None or node.state != "active":
+                emit_permission_event(
+                    "permission.agent.node_lookup",
+                    agent_id=agent_id,
+                    node_id=node_id,
+                    found=False,
+                    state=None if node is None else node.state,
+                )
+                emit_permission_event(
+                    "permission.authorization.decided",
+                    agent_id=agent_id,
+                    requested_atom=atom_payload(requested_atom),
+                    allowed=False,
+                    reason="node_inactive",
+                )
                 return False
+            emit_permission_event(
+                "permission.agent.node_lookup",
+                agent_id=agent_id,
+                node_id=node_id,
+                found=True,
+                state=node.state,
+                atom_count=len(node.atoms),
+            )
             try:
                 self._validate_atoms((requested_atom,))
-                return any(self.atom_covers(atom, requested_atom) for atom in node.atoms)
-            except (TypeError, ValueError, OSError):
+                covering = [
+                    atom for atom in node.atoms if self.atom_covers(atom, requested_atom)
+                ]
+                allowed = bool(covering)
+                emit_permission_event(
+                    "permission.atom.coverage_checked",
+                    operation="execute",
+                    requested_atom=atom_payload(requested_atom),
+                    covering_atom_count=len(covering),
+                    covered=allowed,
+                )
+                emit_permission_event(
+                    "permission.authorization.decided",
+                    agent_id=agent_id,
+                    node_id=node_id,
+                    requested_atom=atom_payload(requested_atom),
+                    allowed=allowed,
+                    reason="covered" if allowed else "not_covered",
+                )
+                return allowed
+            except (TypeError, ValueError, OSError) as exc:
+                emit_permission_event(
+                    "permission.authorization.decided",
+                    agent_id=agent_id,
+                    node_id=node_id,
+                    requested_atom=atom_payload(requested_atom),
+                    allowed=False,
+                    reason="invalid_atom",
+                    error_type=type(exc).__name__,
+                )
                 return False
 
     def detach_agent(self, agent_id: str) -> tuple[str, ...]:
@@ -282,7 +408,14 @@ class PermissionTree:
                 raise UnknownAgent(agent_id)
             node = self._active_node(node_id)
             node.attached_agents.discard(agent_id)
-            return self._prune_empty_ancestors(node.node_id)
+            removed = self._prune_empty_ancestors(node.node_id)
+            emit_permission_event(
+                "permission.agent.detached",
+                agent_id=agent_id,
+                node_id=node_id,
+                pruned_node_ids=list(removed),
+            )
+            return removed
 
     def _prune_empty_ancestors(self, node_id: str) -> tuple[str, ...]:
         removed: list[str] = []
@@ -303,6 +436,11 @@ class PermissionTree:
         """Atomically revoke a non-root node, descendants, and attached agents."""
         with self._lock:
             if node_id == self.ROOT_ID:
+                emit_permission_event(
+                    "permission.subtree.revocation_denied",
+                    node_id=node_id,
+                    reason="root_is_permanent",
+                )
                 raise RootRevocationDenied("the root permission node is permanent")
             root = self._active_node(node_id)
             ordered: list[_PermissionNode] = []
@@ -330,4 +468,10 @@ class PermissionTree:
                 node.state = "deleted"
                 self._nodes.pop(node.node_id, None)
             self._prune_empty_ancestors(parent.node_id)
+            emit_permission_event(
+                "permission.subtree.revoked",
+                node_id=node_id,
+                affected_agents=affected_agents,
+                removed_node_count=len(ordered),
+            )
             return tuple(affected_agents)

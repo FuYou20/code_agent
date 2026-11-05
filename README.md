@@ -85,13 +85,19 @@ Execution Trace → Success Gate ─┬→ Experience Memory
                                 └→ Procedural Skill
 ```
 
-当前成功门禁要求：存在持久化变更、工具调用无错误、若执行 `test_run` 则返回码
-必须为 0，并且模型给出最终结果。通过后，只把问题结果、关键动作和相关文件写入
+当前成功门禁要求：存在持久化变更、写入工具无错误、最后一次 `test_run` 返回码
+为 0（允许先红后绿），并且模型给出最终结果。通过后，只把问题结果、关键动作和相关文件写入
 SQLite FTS5；相似任务检索到的经验只进入当前 Sidecar，不污染稳定前缀和历史。
 
 用户执行 `/learn` 时，同一门禁会阻止失败或纯闲聊轨迹进入 Skill 蒸馏。蒸馏器
 只接收真实工具轨迹，剔除模型虚构的工具需求，并将历史版本归档。经验记忆解决
 “这次做对了什么”，Skill 解决“以后按什么流程重复”。
+
+两类产物统一注册为进化资产：新资产为 `candidate`，只能在沙盒显式加载；经过成对
+A/B 后，正确性不下降且累计净等价 Token（包含蒸馏成本）为正才晋升为 `active`。
+正确但不省 Token 的资产进入 `retired`，导致正确性回退的资产立即进入
+`quarantined`；保留期结束后物理清理内容并保留哈希与事件墓碑。生产运行只自动
+加载 `active`，生命周期状态不授予任何工具或文件权限。
 
 ## 安装与运行
 
@@ -109,6 +115,50 @@ python -m myagent
 python -m myagent "读取 README.md 并概括项目架构"
 ```
 
+全屏 TUI 使用现有 `prompt-toolkit` 依赖，无需额外安装：
+
+```powershell
+myagent-tui
+# 或
+python -m myagent.tui
+```
+
+TUI 左侧显示对话，右侧实时展示每次供应商调用返回后的本轮/会话 Token、缓存与
+未缓存输入、Skill Epoch 预热进度、固化工作集、当前 Memory/Skill、Sidecar组成、
+路由 Token 与 System 变更次数。`/telemetry` 查看完整用量，`/sidecar` 查看最近一次
+实际发送给主 Agent 的 Sidecar。`Enter` 发送，`Esc+Enter` 换行，`Tab` 切换焦点，
+`Ctrl+L` 清空显示，`Ctrl+Q` 退出；高风险工具等待审批时按 `Y` 或 `N`。
+
+### 展示页与在线 TUI
+
+项目提供“核心设计展示页 + 浏览器 Web Terminal”。公开实例会为每个连接创建一次性
+Git 工作区和独立 `MYAGENT_HOME`，只向模型开放 `file_read` 与 `git_read`；会话结束后
+自动清理，不共享 Memory，也不允许执行命令、修改代码或沉淀 Skill。
+
+本地启动展示页：
+
+```powershell
+python -m pip install -e ".[web,test]"
+$env:DEEPSEEK_API_KEY = "..."
+uvicorn myagent.web_demo:app --host 127.0.0.1 --port 8080
+```
+
+访问 `http://127.0.0.1:8080` 查看设计页，点击“进入在线 TUI”打开终端。Web PTY 仅在
+Linux 环境运行；Windows 本地可以预览展示页和健康检查。
+
+Railway 可直接读取仓库根目录的 `railway.toml` 和 `Dockerfile.demo`。在 Railway
+项目变量中配置 `DEEPSEEK_API_KEY`，并建议开启 Serverless、设置月度 Hard Limit。
+可选限制变量包括：
+
+- `DEMO_MAX_SESSIONS=2`：全站最大并发会话；
+- `DEMO_MAX_SESSIONS_PER_HOUR=3`：单 IP 每小时会话数；
+- `DEMO_SESSION_SECONDS=900`：单次体验时长；
+- `DEMO_TOKEN_LIMIT=30000`：单会话 Provider Token 上限；
+- `DEMO_LLM_MODEL=deepseek-flash`：公开体验使用的模型。
+
+部署细节见 [web_demo/README.md](web_demo/README.md)。密钥只在 Railway Variables 中
+设置，不能写入 Git 仓库或前端 `config.js`。
+
 DeepSeek 配置写入 `%MYAGENT_HOME%\config.yaml`，密钥只放环境变量：
 
 ```yaml
@@ -125,6 +175,17 @@ skills:
   max_frozen: 8
   warm_turns: 3
   idle_seconds: 21600
+
+evolution:
+  min_canary_trials: 5
+  uncached_input_weight: 1.0
+  cached_input_weight: 1.0
+  output_weight: 1.0
+  candidate_retention_days: 30
+  quarantine_retention_days: 30
+  retired_retention_days: 30
+  gc_on_startup: true
+  gc_interval_seconds: 86400
 ```
 
 交互命令：
@@ -133,6 +194,8 @@ skills:
 - `/skill-reset`：显式结束当前 Skill Epoch 并重新预热；
 - `/scene code-repair`：指定新场景并重新预热；
 - `/learn`：仅在最近一轮通过进化门禁后蒸馏 Skill；
+- `/evolution-status`：查看 Memory/Skill 的版本、状态与累计 Token 经济账；
+- `/evolution-gc`：立即执行降级、淘汰和到期内容清理；
 - `/exit`：退出会话。
 
 ## 验证
@@ -142,21 +205,27 @@ python -m pytest -q
 python scripts/evaluate_skill_rag.py
 python scripts/evaluate_skill_epoch_cache.py
 python scripts/measure_cache.py
+python scripts/validate_evolution_benchmark.py
 ```
 
 - `evaluate_skill_rag.py`：比较全量 Skill 与检索加主模型重排的 Token 和必需命中；
 - `evaluate_skill_epoch_cache.py`：确定性验证 Skill 固化的结构性缓存上界；
 - `measure_cache.py`：使用实际供应商返回的 cached tokens 观察连续会话；
 - `evaluate_skill_epoch_live.py`：同一任务序列下的 Full-System/Scene-Epoch 在线 A/B。
+- `validate_evolution_benchmark.py`：离线验证10类30条进化任务的错误版与参考修复；
+- `evaluate_evolution.py`：运行 Fixed-Skill/Evolved 双臂在线 A/B，统计迁移成功率、
+  Provider Token、工具调用与耗时。
 
 详细设计见：
 
 - [总体架构](docs/architecture.md)
+- [记忆信用与生命周期](docs/memory-lifecycle.md)
 - [原子权限树](docs/permission-tree.md)
 - [Agent Manager](docs/agent-manager.md)
 - [Skill 加载评测](docs/skill-loading-evaluation.md)
 - [Skill 缓存 Epoch 实验](docs/skill-epoch-system-experiment.md)
 - [Scene-Epoch 在线 A/B 报告](docs/scene-epoch-ab-report.md)
+- [自进化 A/B 数据集](benchmarks/evolution/README.md)
 
 ## 当前边界
 
