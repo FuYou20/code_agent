@@ -87,8 +87,8 @@ def test_retry_hidden_failure_quarantines_incomplete_memory_from_next_variant(
 
     record_feedback(conn, (decision_id,), success=result.passed)
     stats = memory_stats(conn, decision_id)
-    assert stats["status"] == "quarantined"
-    assert stats["lifecycle_status"] == "quarantined"
+    assert stats["status"] == "discarded"
+    assert stats["lifecycle_status"] == "discarded"
     assert stats["failure_count"] == 1
 
     next_hits = retrieve_hits(

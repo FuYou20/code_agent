@@ -78,6 +78,11 @@ def route_skill_workset(
     preferred_scene: str = "",
 ) -> SkillRoute:
     """Classify a scene, retrieve globally, and plan one session workset."""
+    # Soul/persona skills live in the stable system layer and must never spend
+    # retrieval slots or be selected as a task procedure.
+    index = [item for item in index if not item.get("always_on")]
+    if not index:
+        return SkillRoute("", (), (), (), 0)
     history = "\n".join(f"- {item}" for item in recent_user_inputs[-4:]) or "(无)"
     scenes = sorted(
         {str(item.get("scene", "general")).strip() or "general" for item in index}

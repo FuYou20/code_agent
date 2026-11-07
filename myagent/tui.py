@@ -36,6 +36,12 @@ from .cli import _load_skill_index, _read_agents_once, _repo_snapshot
 from .config import load_config
 from .context.stable import initialize_stable_prefix
 from .evolution.artifacts import EvolutionArtifactManager, TokenWeights
+from .gateway import (
+    AgentGateway,
+    AgentTask,
+    DurableGatewayStore,
+    request_persisted_approval,
+)
 from .home import get_home
 from .llm.client import OpenAIClient
 from .llm.types import ToolCall
@@ -198,6 +204,7 @@ class TuiBackend:
         state: SessionState,
         client: TuiTelemetryClient,
         artifact_manager: EvolutionArtifactManager,
+        approval_store: DurableGatewayStore,
         last_gc_at: float,
     ) -> None:
         self.config = config
@@ -205,7 +212,10 @@ class TuiBackend:
         self.state = state
         self.client = client
         self.artifact_manager = artifact_manager
+        self.approval_store = approval_store
         self.last_gc_at = last_gc_at
+        self._active_approver: Callable[[ToolCall], bool] | None = None
+        self.gateway = AgentGateway(self._execute_agent_task)
         self._update_callback: Callable[[dict[str, object]], None] | None = None
         self.client.on_update = self._telemetry_updated
 
@@ -261,15 +271,12 @@ class TuiBackend:
                 cached_input=float(evolution["cached_input_weight"]),
                 output=float(evolution["output_weight"]),
             ),
-            min_canary_trials=int(evolution["min_canary_trials"]),
-            negative_streak=int(evolution["negative_streak"]),
+            candidate_trials=int(evolution["candidate_trials"]),
         )
         if bool(evolution["gc_on_startup"]):
             artifact_manager.garbage_collect(
                 candidate_days=int(evolution["candidate_retention_days"]),
-                inactive_days=int(evolution["inactive_days"]),
-                quarantine_days=int(evolution["quarantine_retention_days"]),
-                retired_days=int(evolution["retired_retention_days"]),
+                discarded_days=int(evolution["discarded_retention_days"]),
                 purge_content=True,
                 skill_store=get_home() / "skills_store",
             )
@@ -314,6 +321,7 @@ class TuiBackend:
             state=state,
             client=client,
             artifact_manager=artifact_manager,
+            approval_store=DurableGatewayStore(get_home() / "gateway.sqlite3"),
             last_gc_at=time.monotonic(),
         )
 
@@ -324,9 +332,7 @@ class TuiBackend:
             return
         self.artifact_manager.garbage_collect(
             candidate_days=int(evolution["candidate_retention_days"]),
-            inactive_days=int(evolution["inactive_days"]),
-            quarantine_days=int(evolution["quarantine_retention_days"]),
-            retired_days=int(evolution["retired_retention_days"]),
+            discarded_days=int(evolution["discarded_retention_days"]),
             purge_content=True,
             skill_store=get_home() / "skills_store",
         )
@@ -341,6 +347,24 @@ class TuiBackend:
     def _telemetry_updated(self, _telemetry: dict[str, object]) -> None:
         if self._update_callback is not None:
             self._update_callback(self.status())
+
+    def _execute_agent_task(self, task: AgentTask) -> str:
+        approve = self._active_approver
+        if approve is None:
+            raise RuntimeError("TUI task has no active approval handler")
+        return run_turn(
+            self.state,
+            task.content,
+            self.client,
+            lambda call: request_persisted_approval(
+                self.approval_store,
+                task=task,
+                agent_id=self.state.agent_id,
+                call=call,
+                delegate=approve,
+                channel="tui",
+            ),
+        )
 
     def handle(self, text: str, approve: Callable[[ToolCall], bool]) -> str:
         """Handle one chat turn or slash command and return display text."""
@@ -408,9 +432,7 @@ class TuiBackend:
             evolution = self.config["evolution"]
             result = self.artifact_manager.garbage_collect(
                 candidate_days=int(evolution["candidate_retention_days"]),
-                inactive_days=int(evolution["inactive_days"]),
-                quarantine_days=int(evolution["quarantine_retention_days"]),
-                retired_days=int(evolution["retired_retention_days"]),
+                discarded_days=int(evolution["discarded_retention_days"]),
                 purge_content=True,
                 skill_store=get_home() / "skills_store",
             )
@@ -454,7 +476,23 @@ class TuiBackend:
                 self.state.skill_cache_epoch_changes += 1
             return f"已切换场景并开始新Epoch：{scene}"
         self.client.begin_turn()
-        return run_turn(self.state, text, self.client, approve)
+        self._active_approver = approve
+        try:
+            result = self.gateway.submit_sync(
+                AgentTask(
+                    task_id=f"tui:{uuid.uuid4().hex}",
+                    session_id=self.state.session_id,
+                    source="tui",
+                    user_id=os.environ.get("USERNAME", "local-user"),
+                    content=text,
+                    reply_target="tui",
+                )
+            )
+        finally:
+            self._active_approver = None
+        if not result.success:
+            raise RuntimeError(f"{result.error_type}: {result.error_message}")
+        return result.content
 
     def status(self) -> dict[str, object]:
         load_state = self.state.skill_load_state
@@ -487,6 +525,7 @@ class TuiBackend:
     def close(self) -> None:
         if self.state.memory_conn is not None:
             self.state.memory_conn.close()
+        self.approval_store.close()
 
 
 @dataclass

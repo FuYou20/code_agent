@@ -116,7 +116,7 @@ def _skill_index(
         for item in load_index(
             home / "skills_store",
             lifecycle=lifecycle,
-            allowed_statuses=("candidate", "canary", "active"),
+            allowed_statuses=("candidate", "active"),
             trusted_unregistered=lifecycle is None,
         )
     }
@@ -155,7 +155,7 @@ def _new_state(
         memory_conn=memory_conn,
         memory_scope=memory_scope,
         artifact_manager=artifact_manager,
-        evolution_artifact_statuses=("candidate", "canary", "active"),
+        evolution_artifact_statuses=("candidate", "active"),
     )
 
 
@@ -171,8 +171,7 @@ def _artifact_manager(
             cached_input=float(values["cached_input_weight"]),
             output=float(values["output_weight"]),
         ),
-        min_canary_trials=int(values["min_canary_trials"]),
-        negative_streak=int(values["negative_streak"]),
+        candidate_trials=int(values["candidate_trials"]),
     )
 
 
@@ -432,6 +431,8 @@ def _record_artifact_trials(
                 except KeyError:
                     pass
             for artifact_id in artifacts:
+                if manager.get(artifact_id).status != "candidate":
+                    continue
                 manager.record_ab_trial(
                     artifact_id,
                     trial_key=f"{treatment['task_id']}:{artifact_id}",

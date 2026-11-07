@@ -45,7 +45,7 @@ def load_index(
     allowed_statuses: tuple[str, ...] = ("active",),
     trusted_unregistered: bool = True,
 ) -> list[dict]:
-    """Scan ``store/*/SKILL.md`` and return a stable L0 metadata index."""
+    """扫描本地 Skill 仓库并构建稳定的 L0 元数据索引。"""
     if not store.is_dir():
         return []
     index: list[dict] = []
@@ -80,8 +80,14 @@ def load_index(
             "description": skill.frontmatter.description,
             "scene": skill.frontmatter.scene,
             "triggers": list(skill.frontmatter.triggers),
+            "always_on": skill.frontmatter.always_on,
             "path": skill.path,
         }
+        if skill.frontmatter.always_on:
+            # Always-on bodies are stable process configuration, not retrieval
+            # candidates. Keep the validated body beside L0 metadata so prompt
+            # assembly does not re-read the file during every tool step.
+            item["body"] = skill.body
         if lifecycle_record is not None:
             item.update(
                 {
@@ -109,6 +115,8 @@ def find_relevant(user_input: str, index: list[dict]) -> list[str]:
     query = user_input.casefold()
     relevant: list[str] = []
     for item in index:
+        if item.get("always_on"):
+            continue
         triggers = item.get("triggers", [])
         if any(str(trigger).casefold() in query for trigger in triggers if str(trigger).strip()):
             name = str(item["name"])

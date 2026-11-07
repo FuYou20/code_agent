@@ -96,7 +96,7 @@ def _prepare_legacy_skill_turn(
     matches = retrieve_relevant(user_input, state.skill_index, k=state.skill_top_k)
     by_name = {str(item.get("name")): item for item in state.skill_index}
     if state.skill_strategy == "full_sidecar":
-        selected = list(state.skill_index)
+        selected = [item for item in state.skill_index if not item.get("always_on")]
     elif state.skill_strategy == "full_system":
         selected = []
     else:
@@ -305,20 +305,35 @@ def run_turn(
     client,
     approve_fn: Callable[[ToolCall], bool],
 ) -> str:
-    """Run model/tool steps synchronously until a final answer or step limit."""
+    """Run model/tool steps synchronously until a final answer or step limit.
+    state 是当前 Agent 会话的运行上下文
+    state.history                 # 历史对话
+    state.permission_tree         # 权限树
+    state.agent_id                # 当前 Agent 身份
+    state.memory_conn             # Memory 的 SQLite 连接
+    state.artifact_manager        # Memory/Skill 生命周期管理器
+    state.skill_index             # 当前可检索的 Skill 元数据
+    state.skill_load_state        # Skill 预热、固化状态
+    state.last_recalled_memory_ids
+    state.last_recorded_memory_id
+    state.step_count
+    user_input 用户当前轮次输入
+    client 大模型调用客户端
+    """
     if state.permission_tree is None or state.permission_adapter is None or not state.agent_id:
         raise RuntimeError("session has no atomic permission-tree binding")
     max_steps = state.max_steps
-    state.compression_client = client
+    state.compression_client = client # 上下文压缩 智能体
     original_input = user_input
-    state.last_activated_skill_name = ""
+    state.last_activated_skill_name = "" # 清空上一轮skill 名称
     state.last_activated_skill_version = None
     # The complete Sidecar lives only in this transient per-turn prefix.  It is
     # sent once, reused as an earlier (cacheable) message during tool steps, and
     # never committed to durable conversation history.
-    transient_turn: list[Message] = []
-    durable_turn: list[Message] = []
+    transient_turn: list[Message] = []  # 创建当前轮的临时消息列表。
+    durable_turn: list[Message] = [] # 创建当前轮需要持久保留的消息列表。剥离只对当前轮有效的 Memory、Skill 和检索信息，避免这些动态内容进入长期历史并反复污染后续上下文。
     recorded_input = False
+    #  每轮任务开始时，系统先根据用户问题和当前会话工作集执行 Skill 路由。
     skill_items, skill_body = _prepare_skill_turn(
         state,
         original_input,
@@ -333,20 +348,20 @@ def run_turn(
     state.last_recorded_memory_id = None
     memory_hits = (
         retrieve_hits(
-            state.memory_conn,
-            original_input,
+            state.memory_conn, # state.memory_conn 数据库连接
+            original_input, # 用户原始输入
             k=1,
-            scope_key=state.memory_scope,
-            artifact_statuses=state.evolution_artifact_statuses,
+            scope_key=state.memory_scope,# 只允许召回当前项目作用域内的具体经验。
+            artifact_statuses=state.evolution_artifact_statuses, # 只允许召回当前项目作用域内的具体经验。
         )
         if not skill_body and state.memory_conn is not None and original_input.strip()
         else []
     )
-    retrieved = render_hits(memory_hits)
+    retrieved = render_hits(memory_hits) # 将记忆转换为可以召回的字符串
     if memory_hits and state.memory_conn is not None:
         state.last_recalled_memory_ids = tuple(hit.decision_id for hit in memory_hits)
         state.last_recalled_memory_scope = memory_hits[0].scope_key
-        mark_recalled(state.memory_conn, state.last_recalled_memory_ids)
+        mark_recalled(state.memory_conn, state.last_recalled_memory_ids)  # 数据库中登记“它这次被用过”
         if state.artifact_manager is not None:
             for hit in memory_hits:
                 state.artifact_manager.record_exposure(
@@ -377,6 +392,7 @@ def run_turn(
             response = client.chat(
                 messages,
                 tools=registry.schemas(advertised_tools(state.permission_tree, state.agent_id)),
+                # advertised_tools是模型调用前的“工具可见性门禁”
             )
 
             if not recorded_input:
@@ -397,16 +413,18 @@ def run_turn(
 
             if not response.tool_calls:
                 decision = evaluate_turn(response.content or "", observations)
+                # 根据当前轮真实工具轨迹，判断该任务是否有资格沉淀为 Memory，或者进一步用于 Skill 蒸馏；如果没有资格，就返回具体原因。
                 state.last_evolution_eligible = decision.eligible
                 state.last_evolution_reasons = decision.reasons
                 state.last_evolution_history = (
                     list(durable_turn) if decision.eligible else []
                 )
+                # 用户任务、相关文件、最终解决结论和验证证据；
                 state.last_recorded_memory_id = record_experience(
                     state.memory_conn,
                     state.session_id,
-                    original_input,
-                    response.content or "",
+                    original_input, # 用户原始输入，进入task 字段
+                    response.content or "", # 最终结论 lesson 字段
                     observations,
                     decision,
                     state.memory_scope,

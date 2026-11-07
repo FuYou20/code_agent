@@ -9,6 +9,63 @@ from pathlib import Path
 from ..evolution.artifacts import EvolutionArtifactManager, initialize_artifact_schema
 
 
+def _migrate_memory_stats_statuses(conn: sqlite3.Connection) -> None:
+    """Collapse legacy Memory statuses into candidate/active/discarded."""
+    row = conn.execute(
+        "SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'memory_stats'"
+    ).fetchone()
+    if row is None or "'discarded'" in str(row[0]):
+        return
+
+    conn.commit()
+    foreign_keys = bool(conn.execute("PRAGMA foreign_keys").fetchone()[0])
+    conn.execute("PRAGMA foreign_keys = OFF")
+    try:
+        conn.executescript(
+            """
+            CREATE TABLE memory_stats_v2 (
+                decision_id INTEGER PRIMARY KEY,
+                status TEXT NOT NULL DEFAULT 'candidate'
+                    CHECK(status IN ('candidate', 'active', 'discarded')),
+                scope_key TEXT NOT NULL DEFAULT '',
+                success_count INTEGER NOT NULL DEFAULT 0,
+                failure_count INTEGER NOT NULL DEFAULT 0,
+                recall_count INTEGER NOT NULL DEFAULT 0,
+                recent_recall_count INTEGER NOT NULL DEFAULT 0,
+                last_recalled_at TEXT,
+                last_verified_at TEXT,
+                last_feedback_at TEXT,
+                FOREIGN KEY(decision_id) REFERENCES decisions(id) ON DELETE CASCADE
+            );
+
+            INSERT INTO memory_stats_v2(
+                decision_id, status, scope_key, success_count, failure_count,
+                recall_count, recent_recall_count, last_recalled_at,
+                last_verified_at, last_feedback_at
+            )
+            SELECT
+                decision_id,
+                CASE status
+                    WHEN 'verified' THEN 'active'
+                    WHEN 'active' THEN 'active'
+                    WHEN 'conflicted' THEN 'discarded'
+                    WHEN 'quarantined' THEN 'discarded'
+                    WHEN 'discarded' THEN 'discarded'
+                    ELSE 'candidate'
+                END,
+                scope_key, success_count, failure_count, recall_count,
+                recent_recall_count, last_recalled_at, last_verified_at,
+                last_feedback_at
+            FROM memory_stats;
+
+            DROP TABLE memory_stats;
+            ALTER TABLE memory_stats_v2 RENAME TO memory_stats;
+            """
+        )
+    finally:
+        conn.execute(f"PRAGMA foreign_keys = {1 if foreign_keys else 0}")
+
+
 def init_db(path: Path) -> sqlite3.Connection:
     """Open a decision database and initialize its table, FTS index, and triggers."""
     path.parent.mkdir(parents=True, exist_ok=True)
@@ -35,14 +92,8 @@ def init_db(path: Path) -> sqlite3.Connection:
 
         CREATE TABLE IF NOT EXISTS memory_stats (
             decision_id INTEGER PRIMARY KEY,
-            status TEXT NOT NULL DEFAULT 'provisional'
-                CHECK(status IN (
-                    'provisional',
-                    'boundary-verified',
-                    'verified',
-                    'conflicted',
-                    'quarantined'
-                )),
+            status TEXT NOT NULL DEFAULT 'candidate'
+                CHECK(status IN ('candidate', 'active', 'discarded')),
             scope_key TEXT NOT NULL DEFAULT '',
             success_count INTEGER NOT NULL DEFAULT 0,
             failure_count INTEGER NOT NULL DEFAULT 0,
@@ -75,6 +126,7 @@ def init_db(path: Path) -> sqlite3.Connection:
         SELECT id FROM decisions;
         """
     )
+    _migrate_memory_stats_statuses(conn)
     initialize_artifact_schema(conn)
     conn.commit()
     return conn

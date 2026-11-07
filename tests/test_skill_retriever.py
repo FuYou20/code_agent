@@ -50,6 +50,24 @@ def test_retriever_is_deterministic_and_respects_k() -> None:
     assert len(left) == 2
 
 
+def test_retriever_never_selects_always_on_soul() -> None:
+    index = [
+        *INDEX,
+        {
+            "name": "lulu-soul",
+            "scene": "general",
+            "description": "Lulu assistant personality",
+            "triggers": ["Lulu", "论文助理"],
+            "always_on": True,
+            "path": "/skills/lulu-soul",
+        },
+    ]
+    assert all(
+        match.name != "lulu-soul"
+        for match in retrieve_relevant("Lulu 论文助理", index, k=20)
+    )
+
+
 def test_warmup_accumulates_candidates_then_freezes_once() -> None:
     state = SkillLoadState()
     generation = skill_index_generation(INDEX)

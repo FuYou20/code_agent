@@ -80,16 +80,17 @@ def test_production_retrieval_requires_token_verified_active_status(tmp_path) ->
         artifact_statuses=("active",),
     ) == ""
 
-    manager = EvolutionArtifactManager(conn, min_canary_trials=1)
+    manager = EvolutionArtifactManager(conn, candidate_trials=3)
     artifact = manager.get_by_key("memory", str(decision_id), 1)
-    manager.record_ab_trial(
-        artifact.artifact_id,
-        trial_key="parser-transfer",
-        control_correct=True,
-        treatment_correct=True,
-        control_usage=TokenUsage(prompt_tokens=1000),
-        treatment_usage=TokenUsage(prompt_tokens=700),
-    )
+    for index in range(3):
+        manager.record_ab_trial(
+            artifact.artifact_id,
+            trial_key=f"parser-transfer-{index}",
+            control_correct=True,
+            treatment_correct=True,
+            control_usage=TokenUsage(prompt_tokens=1000),
+            treatment_usage=TokenUsage(prompt_tokens=700),
+        )
 
     assert "Repair parser cache invalidation" in retrieve(
         conn,
@@ -99,7 +100,7 @@ def test_production_retrieval_requires_token_verified_active_status(tmp_path) ->
     conn.close()
 
 
-def test_success_moves_memory_to_canary_but_token_ab_is_required_for_active(
+def test_success_feedback_does_not_promote_candidate_without_ab(
     tmp_path,
 ) -> None:
     conn = init_db(tmp_path / "memory.db")
@@ -115,19 +116,19 @@ def test_success_moves_memory_to_canary_but_token_ab_is_required_for_active(
 
     mark_recalled(conn, (decision_id,))
     after_recall = memory_stats(conn, decision_id)
-    assert after_recall["status"] == "provisional"
+    assert after_recall["status"] == "candidate"
     assert after_recall["success_count"] == 0
     assert after_recall["recall_count"] == 1
 
     for _ in range(3):
         record_feedback(conn, (decision_id,), success=True)
         stats = memory_stats(conn, decision_id)
-        assert stats["status"] == "boundary-verified"
-        assert stats["lifecycle_status"] == "canary"
+        assert stats["status"] == "candidate"
+        assert stats["lifecycle_status"] == "candidate"
     conn.close()
 
 
-def test_retry_failure_quarantines_memory_and_suppresses_next_recall(tmp_path) -> None:
+def test_retry_failure_discards_memory_and_suppresses_next_recall(tmp_path) -> None:
     """Regression: an incomplete max_attempts fix must not poison every variant."""
     conn = init_db(tmp_path / "memory.db")
     decision_id = insert_decision(
@@ -153,10 +154,10 @@ def test_retry_failure_quarantines_memory_and_suppresses_next_recall(tmp_path) -
 
     # An evaluator-only boundary test proves the recalled guidance incomplete.
     record_feedback(conn, (decision_id,), success=False)
-    quarantined = memory_stats(conn, decision_id)
-    assert quarantined["status"] == "quarantined"
-    assert quarantined["lifecycle_status"] == "quarantined"
-    assert quarantined["failure_count"] == 1
+    discarded = memory_stats(conn, decision_id)
+    assert discarded["status"] == "discarded"
+    assert discarded["lifecycle_status"] == "discarded"
+    assert discarded["failure_count"] == 1
 
     second = retrieve_hits(
         conn,
@@ -169,7 +170,7 @@ def test_retry_failure_quarantines_memory_and_suppresses_next_recall(tmp_path) -
     conn.close()
 
 
-def test_decisive_source_failure_quarantines_new_memory_immediately(tmp_path) -> None:
+def test_decisive_source_failure_discards_new_memory_immediately(tmp_path) -> None:
     conn = init_db(tmp_path / "memory.db")
     decision_id = insert_decision(
         conn,
@@ -184,7 +185,7 @@ def test_decisive_source_failure_quarantines_new_memory_immediately(tmp_path) ->
     record_feedback(conn, (decision_id,), success=False, decisive=True)
 
     stats = memory_stats(conn, decision_id)
-    assert stats["status"] == "quarantined"
+    assert stats["status"] == "discarded"
     assert stats["failure_count"] == 1
     assert retrieve_hits(
         conn,
@@ -298,7 +299,7 @@ def test_successful_write_is_recalled_in_sidecar_but_not_history(monkeypatch, tm
         agent_id="root-1",
         cwd=str(tmp_path),
         memory_conn=conn,
-        evolution_artifact_statuses=("candidate", "canary", "active"),
+        evolution_artifact_statuses=("candidate", "active"),
     )
     _bind_write_permission(state, tmp_path)
 
@@ -344,7 +345,7 @@ def test_memory_sidecar_is_reused_once_inside_multi_step_turn(monkeypatch, tmp_p
         agent_id="root-reuse-once",
         cwd=str(tmp_path),
         memory_conn=conn,
-        evolution_artifact_statuses=("candidate", "canary", "active"),
+        evolution_artifact_statuses=("candidate", "active"),
     )
     _bind_write_permission(state, tmp_path)
     client = MultiStepMemoryClient()
@@ -394,7 +395,7 @@ Use the activated pytest procedure.
         permission_adapter=ToolPermissionAdapter(tmp_path),
         cwd=str(tmp_path),
         memory_conn=conn,
-        evolution_artifact_statuses=("candidate", "canary", "active"),
+        evolution_artifact_statuses=("candidate", "active"),
         skill_index=load_index(tmp_path / "skills"),
         skill_activation_min_score=80,
     )
@@ -463,7 +464,7 @@ def test_twenty_turn_session_still_recalls_earlier_file_change(monkeypatch, tmp_
         agent_id="root-long",
         cwd=str(tmp_path),
         memory_conn=conn,
-        evolution_artifact_statuses=("candidate", "canary", "active"),
+        evolution_artifact_statuses=("candidate", "active"),
     )
     _bind_write_permission(state, tmp_path)
     run_turn(

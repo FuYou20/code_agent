@@ -61,6 +61,8 @@ def retrieve_relevant(query: str, index: list[dict], k: int = 5) -> list[SkillMa
     ranked: list[SkillMatch] = []
 
     for item in index:
+        if item.get("always_on"):
+            continue
         name = str(item.get("name", "")).strip()
         if not name:
             continue

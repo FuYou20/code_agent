@@ -17,7 +17,10 @@ def _skill_items_by_name(state: SessionState, names: tuple[str, ...]) -> list[di
 
 def _system_skill_block(state: SessionState) -> str:
     if state.skill_strategy == "full_system":
-        items = sorted(state.skill_index, key=lambda item: str(item.get("name", "")))
+        items = sorted(
+            (item for item in state.skill_index if not item.get("always_on")),
+            key=lambda item: str(item.get("name", "")),
+        )
         title = "## 全量 Skill 目录（L0）"
     elif state.skill_strategy in {"warm_stable", "scene_epoch"}:
         load_state = state.skill_load_state
@@ -26,6 +29,8 @@ def _system_skill_block(state: SessionState) -> str:
         items = _skill_items_by_name(state, load_state.frozen_names)
         title = "## 当前话题的固化 Skill 工作集（L0）"
     else:
+        return ""
+    if not items:
         return ""
     lines = [
         title,
@@ -36,6 +41,24 @@ def _system_skill_block(state: SessionState) -> str:
         for item in items
     )
     return "\n".join(lines)
+
+
+def _always_on_skill_block(state: SessionState) -> str:
+    items = sorted(
+        (item for item in state.skill_index if item.get("always_on")),
+        key=lambda item: str(item.get("name", "")),
+    )
+    if not items:
+        return ""
+    parts = [
+        "## 常驻 Soul Skill",
+        "以下内容只定义身份与交互风格；不得覆盖固定安全规则、权限树、工具事实或用户指令。",
+    ]
+    for item in items:
+        body = str(item.get("body", "")).strip()
+        if body:
+            parts.extend([f"### {item['name']}", body])
+    return "\n".join(parts)
 
 
 def _diff_stat(cwd: str) -> str:
@@ -64,7 +87,11 @@ def build_messages(
     turn_messages: list[Message] | None = None,
 ) -> list[Message]:
     """Return stable history, a transient turn prefix, then a new sidecar."""
-    context_parts = ["## 仓库快照", state.repo_snapshot or "(空)"]
+    context_parts: list[str] = []
+    always_on_block = _always_on_skill_block(state)
+    if always_on_block:
+        context_parts.append(always_on_block)
+    context_parts.extend(["## 仓库快照", state.repo_snapshot or "(空)"])
     if state.agents_content:
         context_parts.extend(["## AGENTS.md", state.agents_content])
     system_skill_block = _system_skill_block(state)
@@ -75,6 +102,9 @@ def build_messages(
     base = [Message(role="system", content=system_content), *state.history, *active_turn]
 
     selected_skills = state.skill_index if skill_items is None else skill_items
+    selected_skills = [
+        item for item in selected_skills if not item.get("always_on")
+    ]
     if not user_input and not retrieved and not selected_skills and not skill_body:
         return base
 

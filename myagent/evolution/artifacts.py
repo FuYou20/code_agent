@@ -13,23 +13,17 @@ from typing import Mapping
 
 
 ARTIFACT_TYPES = {"memory", "skill"}
-LIVE_STATUSES = {"candidate", "canary", "active"}
-ARTIFACT_STATUSES = LIVE_STATUSES | {"quarantined", "retired", "purged"}
+LIVE_STATUSES = {"candidate", "active"}
+ARTIFACT_STATUSES = LIVE_STATUSES | {"discarded"}
 _TRANSITIONS = {
-    "candidate": {"canary", "quarantined", "retired"},
-    "canary": {"active", "quarantined", "retired"},
-    "active": {"canary", "quarantined", "retired"},
-    "quarantined": {"retired"},
-    "retired": {"purged"},
-    "purged": set(),
+    "candidate": {"active", "discarded"},
+    "active": {"discarded"},
+    "discarded": set(),
 }
-_LEGACY_STATUS = {
-    "candidate": "provisional",
-    "canary": "boundary-verified",
-    "active": "verified",
-    "quarantined": "quarantined",
-    "retired": "quarantined",
-    "purged": "quarantined",
+_MEMORY_STATUS = {
+    "candidate": "candidate",
+    "active": "active",
+    "discarded": "discarded",
 }
 
 
@@ -94,8 +88,90 @@ def content_digest(value: str) -> str:
     return sha256(value.encode("utf-8")).hexdigest()
 
 
+def _migrate_artifact_statuses(conn: sqlite3.Connection) -> None:
+    """Collapse the former six-state lifecycle into three states in-place."""
+    row = conn.execute(
+        "SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'evolution_artifacts'"
+    ).fetchone()
+    if row is None or "'discarded'" in str(row[0]):
+        return
+
+    conn.commit()
+    columns = {
+        str(column[1]) for column in conn.execute("PRAGMA table_info(evolution_artifacts)")
+    }
+    legacy_columns = {
+        "evaluation_epoch": "INTEGER NOT NULL DEFAULT 0",
+        "activated_at": "TEXT",
+        "quarantined_at": "TEXT",
+        "retired_at": "TEXT",
+        "purged_at": "TEXT",
+    }
+    for name, declaration in legacy_columns.items():
+        if name not in columns:
+            conn.execute(
+                f"ALTER TABLE evolution_artifacts ADD COLUMN {name} {declaration}"
+            )
+    conn.commit()
+    foreign_keys = bool(conn.execute("PRAGMA foreign_keys").fetchone()[0])
+    conn.execute("PRAGMA foreign_keys = OFF")
+    try:
+        conn.executescript(
+            """
+            CREATE TABLE evolution_artifacts_v2 (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                artifact_type TEXT NOT NULL
+                    CHECK(artifact_type IN ('memory', 'skill')),
+                subject_key TEXT NOT NULL,
+                version INTEGER NOT NULL DEFAULT 1 CHECK(version > 0),
+                scope_key TEXT NOT NULL DEFAULT '',
+                status TEXT NOT NULL DEFAULT 'candidate'
+                    CHECK(status IN ('candidate', 'active', 'discarded')),
+                content_hash TEXT NOT NULL,
+                content_ref TEXT NOT NULL DEFAULT '',
+                creation_equivalent_tokens REAL NOT NULL DEFAULT 0,
+                evaluation_epoch INTEGER NOT NULL DEFAULT 0,
+                created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                last_evaluated_at TEXT,
+                activated_at TEXT,
+                discarded_at TEXT,
+                purged_at TEXT,
+                UNIQUE(artifact_type, subject_key, version)
+            );
+
+            INSERT INTO evolution_artifacts_v2(
+                id, artifact_type, subject_key, version, scope_key, status,
+                content_hash, content_ref, creation_equivalent_tokens,
+                evaluation_epoch, created_at, updated_at, last_evaluated_at,
+                activated_at, discarded_at, purged_at
+            )
+            SELECT
+                id, artifact_type, subject_key, version, scope_key,
+                CASE status
+                    WHEN 'active' THEN 'active'
+                    WHEN 'candidate' THEN 'candidate'
+                    WHEN 'canary' THEN 'candidate'
+                    ELSE 'discarded'
+                END,
+                content_hash, content_ref, creation_equivalent_tokens,
+                evaluation_epoch, created_at, updated_at, last_evaluated_at,
+                activated_at,
+                COALESCE(quarantined_at, retired_at),
+                purged_at
+            FROM evolution_artifacts;
+
+            DROP TABLE evolution_artifacts;
+            ALTER TABLE evolution_artifacts_v2 RENAME TO evolution_artifacts;
+            """
+        )
+    finally:
+        conn.execute(f"PRAGMA foreign_keys = {1 if foreign_keys else 0}")
+
+
 def initialize_artifact_schema(conn: sqlite3.Connection) -> None:
     """Create the shared lifecycle tables and backfill legacy memories."""
+    _migrate_artifact_statuses(conn)
     conn.executescript(
         """
         CREATE TABLE IF NOT EXISTS evolution_artifacts (
@@ -106,10 +182,7 @@ def initialize_artifact_schema(conn: sqlite3.Connection) -> None:
             version INTEGER NOT NULL DEFAULT 1 CHECK(version > 0),
             scope_key TEXT NOT NULL DEFAULT '',
             status TEXT NOT NULL DEFAULT 'candidate'
-                CHECK(status IN (
-                    'candidate', 'canary', 'active',
-                    'quarantined', 'retired', 'purged'
-                )),
+                CHECK(status IN ('candidate', 'active', 'discarded')),
             content_hash TEXT NOT NULL,
             content_ref TEXT NOT NULL DEFAULT '',
             creation_equivalent_tokens REAL NOT NULL DEFAULT 0,
@@ -118,8 +191,7 @@ def initialize_artifact_schema(conn: sqlite3.Connection) -> None:
             updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
             last_evaluated_at TEXT,
             activated_at TEXT,
-            quarantined_at TEXT,
-            retired_at TEXT,
+            discarded_at TEXT,
             purged_at TEXT,
             UNIQUE(artifact_type, subject_key, version)
         );
@@ -185,6 +257,10 @@ def initialize_artifact_schema(conn: sqlite3.Connection) -> None:
             "ALTER TABLE evolution_artifacts "
             "ADD COLUMN evaluation_epoch INTEGER NOT NULL DEFAULT 0"
         )
+    if "discarded_at" not in artifact_columns:
+        conn.execute("ALTER TABLE evolution_artifacts ADD COLUMN discarded_at TEXT")
+    if "purged_at" not in artifact_columns:
+        conn.execute("ALTER TABLE evolution_artifacts ADD COLUMN purged_at TEXT")
     trial_columns = {
         row[1] for row in conn.execute("PRAGMA table_info(evolution_ab_trials)")
     }
@@ -204,10 +280,11 @@ def initialize_artifact_schema(conn: sqlite3.Connection) -> None:
         SELECT
             'memory', CAST(d.id AS TEXT), 1, COALESCE(s.scope_key, ''),
             CASE COALESCE(s.status, 'provisional')
+                WHEN 'active' THEN 'active'
                 WHEN 'verified' THEN 'active'
-                WHEN 'boundary-verified' THEN 'canary'
-                WHEN 'conflicted' THEN 'quarantined'
-                WHEN 'quarantined' THEN 'quarantined'
+                WHEN 'discarded' THEN 'discarded'
+                WHEN 'conflicted' THEN 'discarded'
+                WHEN 'quarantined' THEN 'discarded'
                 ELSE 'candidate'
             END,
             lower(hex(d.content)), 'decisions:' || CAST(d.id AS TEXT), 0
@@ -234,25 +311,21 @@ def initialize_artifact_schema(conn: sqlite3.Connection) -> None:
 
 
 class EvolutionArtifactManager:
-    """Own lifecycle transitions, A/B token accounting, and garbage collection."""
+    """Own the candidate/active/discarded lifecycle for Memory and Skill."""
 
     def __init__(
         self,
         conn: sqlite3.Connection,
         *,
-        token_weights: TokenWeights = TokenWeights(),
-        min_canary_trials: int = 5,
-        negative_streak: int = 2,
+        token_weights: TokenWeights = TokenWeights(),  # 不同类型 Token 的成本权重
+        candidate_trials: int = 3,  # 候选资产需要完成的可比较 A/B 轮数
         initialize_schema: bool = True,
     ) -> None:
-        if min_canary_trials <= 0:
-            raise ValueError("min_canary_trials must be positive")
-        if negative_streak <= 0:
-            raise ValueError("negative_streak must be positive")
+        if candidate_trials <= 0:
+            raise ValueError("candidate_trials must be positive")
         self.conn = conn
         self.token_weights = token_weights
-        self.min_canary_trials = min_canary_trials
-        self.negative_streak = negative_streak
+        self.candidate_trials = candidate_trials
         if initialize_schema:
             initialize_artifact_schema(conn)
 
@@ -268,6 +341,7 @@ class EvolutionArtifactManager:
         creation_usage: TokenUsage | None = None,
         status: str = "candidate",
     ) -> ArtifactRecord:
+        """登记一条候选 Memory 或 Skill 资产。"""
         if artifact_type not in ARTIFACT_TYPES:
             raise ValueError(f"unsupported artifact type: {artifact_type}")
         if status not in ARTIFACT_STATUSES:
@@ -282,16 +356,14 @@ class EvolutionArtifactManager:
             SELECT id, status
             FROM evolution_artifacts
             WHERE artifact_type = ? AND content_hash = ?
-              AND status IN ('quarantined', 'retired', 'purged')
+              AND status = 'discarded'
             ORDER BY id DESC LIMIT 1
             """,
             (artifact_type, str(content_hash)),
         ).fetchone()
         effective_status = status
         if tombstone is not None and status in LIVE_STATUSES:
-            effective_status = (
-                "quarantined" if tombstone[1] == "quarantined" else "retired"
-            )
+            effective_status = "discarded"
         cursor = self.conn.execute(
             """
             INSERT OR IGNORE INTO evolution_artifacts(
@@ -315,7 +387,7 @@ class EvolutionArtifactManager:
             if artifact_type == "memory":
                 self.conn.execute(
                     "UPDATE memory_stats SET status = ? WHERE decision_id = ?",
-                    (_LEGACY_STATUS[effective_status], int(subject_key)),
+                    (_MEMORY_STATUS[effective_status], int(subject_key)),
                 )
             if tombstone is None:
                 self._event(
@@ -331,7 +403,7 @@ class EvolutionArtifactManager:
                     "deduplicated_tombstone",
                     None,
                     effective_status,
-                    "content matches a disabled artifact",
+                    "content matches a discarded artifact",
                     {"matched_artifact_id": int(tombstone[0])},
                 )
         self.conn.commit()
@@ -454,8 +526,8 @@ class EvolutionArtifactManager:
         self.conn.commit()
         return self.get(artifact_id)
 
-    def list_artifacts(self, *, include_purged: bool = False) -> list[ArtifactRecord]:
-        where = "" if include_purged else "WHERE status != 'purged'"
+    def list_artifacts(self, *, include_discarded: bool = True) -> list[ArtifactRecord]:
+        where = "" if include_discarded else "WHERE status != 'discarded'"
         rows = self.conn.execute(
             f"""
             SELECT id, artifact_type, subject_key, version, scope_key, status,
@@ -500,13 +572,9 @@ class EvolutionArtifactManager:
             raise ValueError(f"invalid transition: {record.status} -> {to_status}")
         timestamp_column = {
             "active": "activated_at",
-            "quarantined": "quarantined_at",
-            "retired": "retired_at",
-            "purged": "purged_at",
+            "discarded": "discarded_at",
         }.get(to_status)
         assignments = "status = ?, updated_at = CURRENT_TIMESTAMP"
-        if record.status == "active" and to_status == "canary":
-            assignments += ", evaluation_epoch = evaluation_epoch + 1"
         if timestamp_column:
             assignments += f", {timestamp_column} = CURRENT_TIMESTAMP"
         self.conn.execute(
@@ -516,7 +584,7 @@ class EvolutionArtifactManager:
         if record.artifact_type == "memory":
             self.conn.execute(
                 "UPDATE memory_stats SET status = ? WHERE decision_id = ?",
-                (_LEGACY_STATUS[to_status], int(record.subject_key)),
+                (_MEMORY_STATUS[to_status], int(record.subject_key)),
             )
         self._event(
             artifact_id,
@@ -528,14 +596,39 @@ class EvolutionArtifactManager:
         self.conn.commit()
         return self.get(artifact_id)
 
-    def start_canary(self, artifact_id: int, *, reason: str = "sandbox approved") -> ArtifactRecord:
-        return self.transition(artifact_id, "canary", reason=reason)
-
-    def quarantine(self, artifact_id: int, *, reason: str) -> ArtifactRecord:
+    def discard(self, artifact_id: int, *, reason: str) -> ArtifactRecord:
         record = self.get(artifact_id)
-        if record.status == "quarantined":
+        if record.status == "discarded":
             return record
-        return self.transition(artifact_id, "quarantined", reason=reason)
+        return self.transition(artifact_id, "discarded", reason=reason)
+
+    def record_active_result(
+        self,
+        artifact_id: int,
+        *,
+        correct: bool,
+        run_id: str = "",
+        details: Mapping[str, object] | None = None,
+    ) -> ArtifactRecord:
+        """Record a correctness-only production result without running A/B."""
+        record = self.get(artifact_id)
+        if record.status != "active":
+            raise ValueError(f"artifact is not active: {record.status}")
+        self._event(
+            artifact_id,
+            "active_result_recorded",
+            "active",
+            "active",
+            run_id or ("correct" if correct else "incorrect"),
+            {"correct": bool(correct), **dict(details or {})},
+        )
+        self.conn.commit()
+        if not correct:
+            return self.discard(
+                artifact_id,
+                reason="decisive correctness failure after activation",
+            )
+        return self.get(artifact_id)
 
     def record_exposure(
         self,
@@ -571,11 +664,12 @@ class EvolutionArtifactManager:
         metadata: Mapping[str, object] | None = None,
     ) -> dict[str, object]:
         record = self.get(artifact_id)
-        if record.status in {"quarantined", "retired", "purged"}:
-            raise ValueError(f"artifact is not testable in status {record.status}")
+        if record.status != "candidate":
+            raise ValueError(
+                f"A/B is only allowed for candidate artifacts, got {record.status}"
+            )
         control_tokens = control_usage.equivalent(self.token_weights)
         treatment_tokens = treatment_usage.equivalent(self.token_weights)
-        evaluation_epoch = record.evaluation_epoch
         cursor = self.conn.execute(
             """
             INSERT OR IGNORE INTO evolution_ab_trials(
@@ -596,7 +690,7 @@ class EvolutionArtifactManager:
                 float(control_tokens - treatment_tokens),
                 int(decisive_failure),
                 json.dumps(metadata or {}, ensure_ascii=False, sort_keys=True),
-                evaluation_epoch,
+                0,
             ),
         )
         if not cursor.rowcount:
@@ -624,65 +718,27 @@ class EvolutionArtifactManager:
         )
         self.conn.commit()
 
-        if decisive_failure or (control_correct and not treatment_correct):
-            self.quarantine(
+        if decisive_failure or not treatment_correct:
+            self.discard(
                 artifact_id,
-                reason="correctness regression in A/B trial",
+                reason="candidate failed correctness in A/B trial",
             )
             return self.economics(artifact_id)
 
-        current = self.get(artifact_id)
-        if current.status == "candidate":
-            self.start_canary(artifact_id, reason="first non-regressing A/B trial")
-
         metrics = self.economics(artifact_id)
-        epoch_metrics = self._epoch_economics(artifact_id)
-        if self.get(artifact_id).status == "active":
-            if self._negative_comparable_streak(artifact_id) >= self.negative_streak:
-                self.transition(
-                    artifact_id,
-                    "canary",
-                    reason="rolling token economics regressed",
-                )
-            return self.economics(artifact_id)
-
-        if int(epoch_metrics["comparable_trials"]) >= self.min_canary_trials:
-            if (
-                int(epoch_metrics["correctness_regressions"]) == 0
-                and float(epoch_metrics["net_token_saving"]) > 0
-                and float(epoch_metrics["median_token_saving"]) > 0
-            ):
+        if int(metrics["comparable_trials"]) >= self.candidate_trials:
+            if float(metrics["gross_token_saving"]) > 0:
                 self.transition(
                     artifact_id,
                     "active",
-                    reason="correctness held and net token saving is positive",
+                    reason="candidate passed correctness and reduced cumulative tokens",
                 )
             else:
-                self.transition(
+                self.discard(
                     artifact_id,
-                    "retired",
-                    reason="canary completed without positive token economics",
+                    reason="candidate did not reduce cumulative tokens",
                 )
         return self.economics(artifact_id)
-
-    def _negative_comparable_streak(self, artifact_id: int) -> int:
-        rows = self.conn.execute(
-            """
-            SELECT token_saving, control_correct, treatment_correct
-            FROM evolution_ab_trials
-            WHERE artifact_id = ?
-            ORDER BY id DESC
-            """,
-            (int(artifact_id),),
-        ).fetchall()
-        streak = 0
-        for saving, control_correct, treatment_correct in rows:
-            if not (control_correct and treatment_correct):
-                continue
-            if float(saving) > 0:
-                break
-            streak += 1
-        return streak
 
     def economics(self, artifact_id: int) -> dict[str, object]:
         record = self.get(artifact_id)
@@ -713,34 +769,6 @@ class EvolutionArtifactManager:
             "net_token_saving": gross - record.creation_equivalent_tokens,
             "median_token_saving": median(savings) if savings else 0.0,
             "break_even": gross > record.creation_equivalent_tokens,
-            "evaluation_epoch": record.evaluation_epoch,
-            "current_epoch": self._epoch_economics(artifact_id),
-        }
-
-    def _epoch_economics(self, artifact_id: int) -> dict[str, object]:
-        record = self.get(artifact_id)
-        rows = self.conn.execute(
-            """
-            SELECT control_correct, treatment_correct, token_saving
-            FROM evolution_ab_trials
-            WHERE artifact_id = ? AND evaluation_epoch = ?
-            ORDER BY id
-            """,
-            (int(artifact_id), record.evaluation_epoch),
-        ).fetchall()
-        comparable = [row for row in rows if row[0] and row[1]]
-        savings = [float(row[2]) for row in comparable]
-        gross = sum(savings)
-        creation_cost = (
-            record.creation_equivalent_tokens if record.evaluation_epoch == 0 else 0.0
-        )
-        return {
-            "trials": len(rows),
-            "comparable_trials": len(comparable),
-            "correctness_regressions": sum(bool(row[0] and not row[1]) for row in rows),
-            "gross_token_saving": gross,
-            "net_token_saving": gross - creation_cost,
-            "median_token_saving": median(savings) if savings else 0.0,
         }
 
     def garbage_collect(
@@ -748,22 +776,15 @@ class EvolutionArtifactManager:
         *,
         now: datetime | None = None,
         candidate_days: int = 30,
-        inactive_days: int = 90,
-        quarantine_days: int = 30,
-        retired_days: int = 30,
+        discarded_days: int = 30,
         purge_content: bool = False,
         skill_store: Path | None = None,
     ) -> dict[str, int]:
-        """Downgrade stale assets and optionally purge expired content safely."""
-        if min(
-            candidate_days,
-            inactive_days,
-            quarantine_days,
-            retired_days,
-        ) < 0:
+        """Discard stale candidates and optionally purge old discarded content."""
+        if min(candidate_days, discarded_days) < 0:
             raise ValueError("retention days must be non-negative")
         current = now or datetime.now(timezone.utc)
-        counts = {"downgraded": 0, "retired": 0, "purged": 0}
+        counts = {"discarded": 0, "purged": 0}
         for artifact in list(self.list_artifacts()):
             reference = artifact.last_evaluated_at or artifact.updated_at
             try:
@@ -771,39 +792,19 @@ class EvolutionArtifactManager:
             except ValueError:
                 continue
             age = current - changed
-            if artifact.status == "active" and age >= timedelta(days=inactive_days):
-                self.transition(
+            if artifact.status == "candidate" and age >= timedelta(days=candidate_days):
+                self.discard(
                     artifact.artifact_id,
-                    "canary",
-                    reason="active artifact verification expired",
+                    reason="candidate validation retention expired",
                 )
-                counts["downgraded"] += 1
-            elif artifact.status in {"candidate", "canary"} and age >= timedelta(
-                days=candidate_days
+                counts["discarded"] += 1
+            elif (
+                artifact.status == "discarded"
+                and artifact.content_ref
+                and age >= timedelta(days=discarded_days)
+                and purge_content
+                and self._purge_content(artifact, skill_store=skill_store)
             ):
-                self.transition(
-                    artifact.artifact_id,
-                    "retired",
-                    reason="candidate/canary retention expired",
-                )
-                counts["retired"] += 1
-            elif artifact.status == "quarantined" and age >= timedelta(
-                days=quarantine_days
-            ):
-                self.transition(
-                    artifact.artifact_id,
-                    "retired",
-                    reason="quarantine retention expired",
-                )
-                counts["retired"] += 1
-            elif artifact.status == "retired" and age >= timedelta(days=retired_days):
-                if purge_content:
-                    self._purge_content(artifact, skill_store=skill_store)
-                self.transition(
-                    artifact.artifact_id,
-                    "purged",
-                    reason="retired retention expired",
-                )
                 counts["purged"] += 1
         return counts
 
@@ -812,22 +813,39 @@ class EvolutionArtifactManager:
         artifact: ArtifactRecord,
         *,
         skill_store: Path | None,
-    ) -> None:
+    ) -> bool:
         if artifact.artifact_type == "memory":
             self.conn.execute(
                 "DELETE FROM decisions WHERE id = ?",
                 (int(artifact.subject_key),),
             )
-            self.conn.commit()
-            return
-        if artifact.artifact_type != "skill" or skill_store is None:
-            return
-        root = skill_store.resolve()
-        target = Path(artifact.content_ref).resolve()
-        try:
-            target.relative_to(root)
-        except ValueError as exc:
-            raise ValueError("skill content_ref escapes configured skill store") from exc
-        if target.name != "SKILL.md":
-            raise ValueError("only a registered SKILL.md can be purged")
-        target.unlink(missing_ok=True)
+        elif artifact.artifact_type == "skill" and skill_store is not None:
+            root = skill_store.resolve()
+            target = Path(artifact.content_ref).resolve()
+            try:
+                target.relative_to(root)
+            except ValueError as exc:
+                raise ValueError("skill content_ref escapes configured skill store") from exc
+            if target.name != "SKILL.md" and target.parent.name != ".history":
+                raise ValueError("only a registered Skill markdown file can be purged")
+            target.unlink(missing_ok=True)
+        else:
+            return False
+        self.conn.execute(
+            """
+            UPDATE evolution_artifacts
+            SET content_ref = '', purged_at = CURRENT_TIMESTAMP,
+                updated_at = CURRENT_TIMESTAMP
+            WHERE id = ?
+            """,
+            (int(artifact.artifact_id),),
+        )
+        self._event(
+            artifact.artifact_id,
+            "content_purged",
+            "discarded",
+            "discarded",
+            "discarded content retention expired",
+        )
+        self.conn.commit()
+        return True

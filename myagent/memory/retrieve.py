@@ -10,11 +10,9 @@ import sqlite3
 
 
 _BASE_TRUST = {
-    "provisional": 0.40,
-    "boundary-verified": 0.70,
-    "verified": 1.00,
-    "conflicted": 0.05,
-    "quarantined": 0.00,
+    "candidate": 0.40,
+    "active": 1.00,
+    "discarded": 0.00,
 }
 _RECENT_WINDOW = timedelta(hours=1)
 
@@ -69,7 +67,7 @@ def retrieve_hits(
     match_query = _match_query(query)
     if not match_query:
         return []
-    allowed = artifact_statuses or ("candidate", "canary", "active")
+    allowed = artifact_statuses or ("candidate", "active")
     if not allowed:
         return []
     placeholders = ",".join("?" for _ in allowed)
@@ -217,8 +215,8 @@ def record_feedback(
 ) -> None:
     """Record correctness evidence without promoting on exposure alone.
 
-    Token-positive A/B evidence is required for ``active``. A correctness
-    failure is harmful evidence and immediately quarantines the artifact.
+    Three candidate A/B trials are required for ``active``. A decisive
+    correctness failure immediately discards the artifact.
     """
     if not decision_ids:
         return
@@ -254,10 +252,11 @@ def record_feedback(
                 (success_count, int(decision_id)),
             )
             conn.commit()
-            if artifact.status == "candidate":
-                manager.start_canary(
+            if artifact.status == "active":
+                manager.record_active_result(
                     artifact.artifact_id,
-                    reason="independent correctness verification",
+                    correct=True,
+                    run_id="memory_feedback_success",
                 )
         else:
             failure_count = int(failure_count) + 1
@@ -271,8 +270,18 @@ def record_feedback(
                 (failure_count, int(decision_id)),
             )
             conn.commit()
-            if artifact.status in {"candidate", "canary", "active"}:
-                manager.quarantine(
+            if artifact.status == "active":
+                manager.record_active_result(
+                    artifact.artifact_id,
+                    correct=False,
+                    run_id=(
+                        "decisive_memory_failure"
+                        if decisive
+                        else "memory_failure_after_exposure"
+                    ),
+                )
+            elif artifact.status == "candidate":
+                manager.discard(
                     artifact.artifact_id,
                     reason=(
                         "decisive correctness failure"

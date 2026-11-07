@@ -70,6 +70,32 @@ def test_router_separates_current_and_potential_skills() -> None:
     assert route.prompt_tokens == 34
 
 
+def test_router_does_not_call_model_when_only_always_on_soul_exists() -> None:
+    class NoCallClient:
+        def chat(self, messages, tools):
+            raise AssertionError("always-on Soul must not enter task routing")
+
+    route = route_skill_workset(
+        NoCallClient(),
+        "和 Lulu 聊聊论文",
+        (),
+        [
+            {
+                "name": "lulu-soul",
+                "scene": "general",
+                "description": "Lulu persona",
+                "triggers": [],
+                "always_on": True,
+                "path": "/skills/lulu-soul",
+            }
+        ],
+    )
+
+    assert route.current_required == ()
+    assert route.session_candidates == ()
+    assert route.prompt_tokens == 0
+
+
 class WarmRuntimeClient:
     def __init__(self) -> None:
         self.call_number = 0

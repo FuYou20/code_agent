@@ -21,10 +21,12 @@ dependencies = [
 test = ["pytest>=8.0"]
 observability = ["langfuse>=3,<4", "protobuf>=5,<7"]
 web = ["fastapi>=0.115,<1", "uvicorn[standard]>=0.30,<1"]
+paperbot = ["lark-channel-sdk>=1.4,<2", "pypdf>=5,<7"]
 
 [project.scripts]
 myagent = "myagent.cli:main"
 myagent-tui = "myagent.tui:main"
+myagent-paper-bot = "myagent.paper_bot.service:main"
 
 [tool.setuptools.packages.find]
 include = ["myagent*", "benchmarks*"]

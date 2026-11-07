@@ -148,7 +148,7 @@ def distill(
     scope_key: str = "",
 ) -> Skill:
     """Create a versioned skill whose tools are limited to the real trajectory."""
-    trajectory, used_tools = _filtered_trajectory(history)
+    trajectory, used_tools = _filtered_trajectory(history) # 从完整对话历史中提取经过真实工具结果确认的操作轨迹，并统计实际使用过的工具
     response = client.chat(
         [
             Message(

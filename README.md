@@ -93,11 +93,11 @@ SQLite FTS5；相似任务检索到的经验只进入当前 Sidecar，不污染�
 只接收真实工具轨迹，剔除模型虚构的工具需求，并将历史版本归档。经验记忆解决
 “这次做对了什么”，Skill 解决“以后按什么流程重复”。
 
-两类产物统一注册为进化资产：新资产为 `candidate`，只能在沙盒显式加载；经过成对
-A/B 后，正确性不下降且累计净等价 Token（包含蒸馏成本）为正才晋升为 `active`。
-正确但不省 Token 的资产进入 `retired`，导致正确性回退的资产立即进入
-`quarantined`；保留期结束后物理清理内容并保留哈希与事件墓碑。生产运行只自动
-加载 `active`，生命周期状态不授予任何工具或文件权限。
+两类产物统一注册为进化资产，并采用 `candidate / active / discarded` 三状态治理。
+新资产在候选期完成三轮可比较 A/B；实验组全部正确且累计等价 Token 低于对照组才
+晋升为 `active`，否则直接废弃。生效后不再运行高成本 A/B，只记录曝光和确定性
+正确性结果；一次明确错误即进入 `discarded`。生产运行只自动加载 `active`，生命
+周期状态不授予任何工具或文件权限。
 
 ## 安装与运行
 
@@ -177,13 +177,12 @@ skills:
   idle_seconds: 21600
 
 evolution:
-  min_canary_trials: 5
+  candidate_trials: 3
   uncached_input_weight: 1.0
   cached_input_weight: 1.0
   output_weight: 1.0
   candidate_retention_days: 30
-  quarantine_retention_days: 30
-  retired_retention_days: 30
+  discarded_retention_days: 30
   gc_on_startup: true
   gc_interval_seconds: 86400
 ```

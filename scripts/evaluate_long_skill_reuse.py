@@ -187,7 +187,7 @@ def _new_state(
         skill_index=load_index(
             home / "skills_store",
             lifecycle=artifact_manager,
-            allowed_statuses=("candidate", "canary", "active"),
+            allowed_statuses=("candidate", "active"),
             trusted_unregistered=artifact_manager is None,
         ),
         skill_strategy="top_k",
@@ -198,7 +198,7 @@ def _new_state(
         memory_conn=None,
         memory_scope="",
         artifact_manager=artifact_manager,
-        evolution_artifact_statuses=("candidate", "canary", "active"),
+        evolution_artifact_statuses=("candidate", "active"),
     )
 
 
@@ -291,8 +291,7 @@ class ArmRunner:
                     cached_input=float(values["cached_input_weight"]),
                     output=float(values["output_weight"]),
                 ),
-                min_canary_trials=int(values["min_canary_trials"]),
-                negative_streak=int(values["negative_streak"]),
+                candidate_trials=int(values["candidate_trials"]),
             )
 
     def __call__(self, *, item, **_kwargs):
@@ -394,6 +393,8 @@ def _record_long_trials(
             str(treatment["activated_skill"]),
             treatment.get("activated_skill_version"),
         )
+        if artifact.status != "candidate":
+            continue
         manager.record_ab_trial(
             artifact.artifact_id,
             trial_key=str(treatment["task_id"]),

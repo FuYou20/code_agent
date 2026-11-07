@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import atexit
 import os
 import subprocess
 import sys
@@ -22,6 +23,12 @@ from .llm.types import ToolCall
 from .memory.store import init_db
 from .home import get_home
 from .evolution.artifacts import EvolutionArtifactManager, TokenWeights
+from .gateway import (
+    AgentGateway,
+    AgentTask,
+    DurableGatewayStore,
+    request_persisted_approval,
+)
 from .permissions import PermissionTree, ToolPermissionAdapter
 from .skills.manager import load_index
 from .skills.distiller import distill
@@ -57,6 +64,7 @@ def _read_agents_once(cwd: Path) -> str:
 
 
 def _load_skill_index(lifecycle: EvolutionArtifactManager | None = None) -> list[dict]:
+    # 它把预置 Skill 和自进化 Skill 合并，同时通过生命周期管理保证未经验证的运行时 Skill 不会直接进入正式工作集。
     bundled_store = Path(__file__).resolve().parents[1] / "skills_store"
     runtime_store = get_home() / "skills_store"
     runtime_store.mkdir(parents=True, exist_ok=True)
@@ -160,15 +168,12 @@ def main() -> None:
             cached_input=float(evolution_config["cached_input_weight"]),
             output=float(evolution_config["output_weight"]),
         ),
-        min_canary_trials=int(evolution_config["min_canary_trials"]),
-        negative_streak=int(evolution_config["negative_streak"]),
+        candidate_trials=int(evolution_config["candidate_trials"]),
     )
     if bool(evolution_config["gc_on_startup"]):
         artifact_manager.garbage_collect(
             candidate_days=int(evolution_config["candidate_retention_days"]),
-            inactive_days=int(evolution_config["inactive_days"]),
-            quarantine_days=int(evolution_config["quarantine_retention_days"]),
-            retired_days=int(evolution_config["retired_retention_days"]),
+            discarded_days=int(evolution_config["discarded_retention_days"]),
             purge_content=True,
             skill_store=get_home() / "skills_store",
         )
@@ -208,15 +213,32 @@ def main() -> None:
     console = Console()
     prompt: PromptSession = PromptSession()
     approve = _make_approver(console, prompt)
+    approval_store = DurableGatewayStore(get_home() / "gateway.sqlite3")
+    atexit.register(approval_store.close)
+
+    def execute_task(task: AgentTask) -> str:
+        return run_turn(
+            state,
+            task.content,
+            client,
+            lambda call: request_persisted_approval(
+                approval_store,
+                task=task,
+                agent_id=state.agent_id,
+                call=call,
+                delegate=approve,
+                channel="cli",
+            ),
+        )
+
+    gateway = AgentGateway(execute_task)
 
     def handle(text: str) -> None:
         nonlocal last_gc_at
         if time.monotonic() - last_gc_at >= gc_interval_seconds:
             artifact_manager.garbage_collect(
                 candidate_days=int(evolution_config["candidate_retention_days"]),
-                inactive_days=int(evolution_config["inactive_days"]),
-                quarantine_days=int(evolution_config["quarantine_retention_days"]),
-                retired_days=int(evolution_config["retired_retention_days"]),
+                discarded_days=int(evolution_config["discarded_retention_days"]),
                 purge_content=True,
                 skill_store=get_home() / "skills_store",
             )
@@ -273,9 +295,7 @@ def main() -> None:
         if text.strip() == "/evolution-gc":
             result = artifact_manager.garbage_collect(
                 candidate_days=int(evolution_config["candidate_retention_days"]),
-                inactive_days=int(evolution_config["inactive_days"]),
-                quarantine_days=int(evolution_config["quarantine_retention_days"]),
-                retired_days=int(evolution_config["retired_retention_days"]),
+                discarded_days=int(evolution_config["discarded_retention_days"]),
                 purge_content=True,
                 skill_store=get_home() / "skills_store",
             )
@@ -325,8 +345,21 @@ def main() -> None:
                 state.skill_cache_epoch_changes += 1
             console.print(f"[green]已切换场景并开始新Epoch：{scene}[/green]")
             return
-        answer = run_turn(state, text, client, approve)
-        console.print(answer)
+        task = AgentTask(
+            task_id=f"cli:{uuid.uuid4().hex}",
+            session_id=state.session_id,
+            source="cli",
+            user_id=os.environ.get("USERNAME", "local-user"),
+            content=text,
+            reply_target="stdout",
+        )
+        result = gateway.submit_sync(task)
+        if not result.success:
+            console.print(
+                f"[red]{result.error_type}: {result.error_message}[/red]"
+            )
+            return
+        console.print(result.content)
 
     if len(sys.argv) > 1:
         handle(" ".join(sys.argv[1:]))

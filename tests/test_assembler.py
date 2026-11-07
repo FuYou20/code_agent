@@ -136,3 +136,33 @@ def test_full_system_places_all_l0_before_history(tmp_path) -> None:
     assert messages[1] is prior
     assert "skill-a: A" not in messages[-1].content
 
+
+def test_always_on_soul_lives_only_in_stable_system_layer(tmp_path) -> None:
+    stable.STABLE_PREFIX = "stable"
+    soul = {
+        "name": "lulu-soul",
+        "description": "Lulu persona",
+        "always_on": True,
+        "body": "你叫 Lulu。保持冷静、可靠。",
+    }
+    task_skill = {
+        "name": "run-tests",
+        "description": "Run pytest.",
+        "always_on": False,
+    }
+    state = SessionState(
+        session_id="soul",
+        cwd=str(tmp_path),
+        skill_strategy="full_system",
+        skill_index=[soul, task_skill],
+    )
+
+    messages = build_messages(state, "帮我检查测试", skill_items=[soul, task_skill])
+
+    assert "## 常驻 Soul Skill" in messages[0].content
+    assert "你叫 Lulu。保持冷静、可靠。" in messages[0].content
+    assert "- run-tests: Run pytest." in messages[0].content
+    assert "- lulu-soul: Lulu persona" not in messages[0].content
+    assert "lulu-soul" not in messages[-1].content
+    assert "run-tests: Run pytest." in messages[-1].content
+

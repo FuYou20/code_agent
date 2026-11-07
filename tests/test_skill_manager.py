@@ -40,6 +40,7 @@ Secret L1 instructions.
             "description": "Demo description",
             "scene": "general",
             "triggers": ["demo", "示例"],
+            "always_on": False,
             "path": str(skill_dir.resolve()),
         }
     ]
@@ -60,6 +61,28 @@ Body text.
 """,
     )
     assert "Body text." in load_body(skill_dir)
+
+
+def test_load_index_accepts_project_fields_inside_standard_metadata(tmp_path) -> None:
+    _write_skill(
+        tmp_path,
+        "paper",
+        """---
+name: paper-demo
+description: Paper demo
+metadata:
+  scene: paper-research
+  triggers: [今日推荐]
+  permission_requirements:
+    - tool: paper_recommend_today
+---
+Use the paper tool.
+""",
+    )
+
+    item = load_index(tmp_path)[0]
+    assert item["scene"] == "paper-research"
+    assert item["triggers"] == ["今日推荐"]
 
 
 def test_find_relevant_matches_case_insensitive_triggers() -> None:
@@ -89,14 +112,20 @@ def test_invalid_skill_is_skipped(tmp_path) -> None:
     assert load_index(tmp_path) == []
 
 
-def test_bundled_store_contains_three_skills() -> None:
+def test_bundled_store_contains_task_skills_and_lulu_soul() -> None:
     store = Path(__file__).resolve().parents[1] / "skills_store"
     index = load_index(store)
     assert [item["name"] for item in index] == [
         "fix-import-cycle",
+        "lulu-soul",
+        "paper-deep-reading",
+        "paper-recommendation",
         "read-repo",
         "run-tests",
     ]
+    soul = next(item for item in index if item["name"] == "lulu-soul")
+    assert soul["always_on"] is True
+    assert "你叫 **Lulu**" in soul["body"]
 
 
 def test_skill_index_is_injected_only_into_current_sidecar(tmp_path) -> None:
@@ -109,11 +138,14 @@ def test_skill_index_is_injected_only_into_current_sidecar(tmp_path) -> None:
     assert state.history == []
 
 
-def test_cli_startup_loads_three_bundled_skills(monkeypatch, tmp_path) -> None:
+def test_cli_startup_loads_bundled_task_skills_and_soul(monkeypatch, tmp_path) -> None:
     monkeypatch.setenv("MYAGENT_HOME", str(tmp_path / "home"))
     index = _load_skill_index()
     assert [item["name"] for item in index] == [
         "fix-import-cycle",
+        "lulu-soul",
+        "paper-deep-reading",
+        "paper-recommendation",
         "read-repo",
         "run-tests",
     ]
@@ -137,21 +169,22 @@ Legacy procedure.
 """,
     )
     conn = init_db(home / "memory.db")
-    manager = EvolutionArtifactManager(conn, min_canary_trials=1)
+    manager = EvolutionArtifactManager(conn, candidate_trials=3)
 
     initial = _load_skill_index(manager)
     assert "legacy-runtime" not in {item["name"] for item in initial}
     artifact = manager.get_by_key("skill", "legacy-runtime")
     assert artifact.status == "candidate"
 
-    manager.record_ab_trial(
-        artifact.artifact_id,
-        trial_key="legacy-check",
-        control_correct=True,
-        treatment_correct=True,
-        control_usage=TokenUsage(prompt_tokens=1000),
-        treatment_usage=TokenUsage(prompt_tokens=500),
-    )
+    for index in range(3):
+        manager.record_ab_trial(
+            artifact.artifact_id,
+            trial_key=f"legacy-check-{index}",
+            control_correct=True,
+            treatment_correct=True,
+            control_usage=TokenUsage(prompt_tokens=1000),
+            treatment_usage=TokenUsage(prompt_tokens=500),
+        )
     promoted = _load_skill_index(manager)
     assert "legacy-runtime" in {item["name"] for item in promoted}
     conn.close()

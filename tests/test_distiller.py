@@ -147,21 +147,22 @@ def test_new_candidate_version_does_not_replace_active_skill(
     home = tmp_path / "home"
     monkeypatch.setenv("MYAGENT_HOME", str(home))
     conn = init_db(home / "memory.db")
-    manager = EvolutionArtifactManager(conn, min_canary_trials=1)
+    manager = EvolutionArtifactManager(conn, candidate_trials=3)
     client = FakeDistillClient(
         [_generated("First active procedure."), _generated("Second candidate procedure.")]
     )
 
     first = distill(_history(), client, artifact_manager=manager)
     first_artifact = manager.get_by_key("skill", first.frontmatter.name, first.version)
-    manager.record_ab_trial(
-        first_artifact.artifact_id,
-        trial_key="promote-v1",
-        control_correct=True,
-        treatment_correct=True,
-        control_usage=TokenUsage(prompt_tokens=1000),
-        treatment_usage=TokenUsage(prompt_tokens=500),
-    )
+    for index in range(3):
+        manager.record_ab_trial(
+            first_artifact.artifact_id,
+            trial_key=f"promote-v1-{index}",
+            control_correct=True,
+            treatment_correct=True,
+            control_usage=TokenUsage(prompt_tokens=1000),
+            treatment_usage=TokenUsage(prompt_tokens=500),
+        )
     second = distill(_history(), client, artifact_manager=manager)
 
     assert second.version == 2
